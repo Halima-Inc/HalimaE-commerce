@@ -109,6 +109,7 @@ export class DashboardService {
         let grossRevenue   = 0;
         let totalDiscounts = 0;
         let discountCount  = 0;
+        let thisYearRevenue = 0;
         const revenueByCurrency: Record<string, number>  = {};
         const salesByHour      : Record<string, number>  = {};
         const salesByDay       : Record<string, number>  = {};
@@ -148,6 +149,10 @@ export class DashboardService {
 
             // Sales by period
             const placedAt = new Date(order.placedAt);
+
+            if (placedAt >= startOfYear) {
+                thisYearRevenue += orderTotal;
+            }
             const hourKey  = `${placedAt.toISOString().slice(0, 13)}:00`;
             const dayKey   = placedAt.toISOString().slice(0, 10);
             const weekKey  = this.getWeekKey(placedAt);
@@ -188,11 +193,7 @@ export class DashboardService {
         // Top regions
         const topRegions = ordersByLocation.slice(0, 5);
 
-        // Year-over-year comparison
-        const thisYearRevenue = orders
-            .filter(o => new Date(o.placedAt) >= startOfYear)
-            .reduce((sum, o) => sum + o.items.reduce((s, i) => s + Number(i.unitPrice) * i.qty, 0), 0);
-
+        // Year-over-year comparison (thisYearRevenue already calculated in the loop above)
         const lastYearOrders = await this.prisma.order.findMany({
             where: {
                 paymentStatus: 'PAID',
