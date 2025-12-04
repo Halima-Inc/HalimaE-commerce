@@ -41,7 +41,7 @@ export class DashboardController {
     @ApiStandardResponse(DashboardDto, 'Dashboard metrics retrieved successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
     @ApiStandardErrorResponse(403, 'Forbidden', 'Admin or employee role required')
-    async getDashboardMetrics(): Promise<DashboardDto | null> {
+    async getDashboardMetrics(): Promise<DashboardDto> {
         // Try to get from cache first
         const cached = await this.cacheService.get<DashboardDto>('dashboard-metrics');
         
