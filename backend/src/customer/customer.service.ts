@@ -102,7 +102,7 @@ export class CustomerService {
     page: number = 1,
     limit: number = 10,
     search: string = '',
-    sort: string = 'name',
+    sort: 'name' | 'email' | 'createdAt' | 'totalSpent' | 'orderCount' = 'name',
     order: 'asc' | 'desc' = 'asc',
   ) {
     this.logger.debug(
@@ -116,6 +116,10 @@ export class CustomerService {
         { name: { contains: search, mode: 'insensitive' } },
         { email: { contains: search, mode: 'insensitive' } },
       ];
+    }
+
+    if (sort === 'totalSpent' || sort === 'orderCount') {
+      return this.findAllWithPurchaseStats(where, skip, limit, sort, order, search);
     }
 
     const [total, customers] = await this.prisma.$transaction([
@@ -132,12 +136,86 @@ export class CustomerService {
           name: true,
           email: true,
           phone: true,
+          createdAt: true,
         },
       }),
     ]);
     const totalPages = Math.ceil(total / limit);
     return {
       data: customers,
+      meta: {
+        total,
+        totalPages,
+      },
+    };
+  }
+
+  private async findAllWithPurchaseStats(
+    where: Prisma.CustomerWhereInput,
+    skip: number,
+    limit: number,
+    sort: 'totalSpent' | 'orderCount',
+    order: 'asc' | 'desc',
+    search: string = '',
+  ) {
+    // Build search condition for raw query
+    const searchCondition = search
+      ? `AND (c.name ILIKE '%${search}%' OR c.email ILIKE '%${search}%')`
+      : '';
+
+    const orderDirection = order.toUpperCase();
+    const sortColumn = sort === 'totalSpent' ? 'total_spent' : 'order_count';
+
+    // Get customers with aggregated order stats
+    const customersWithStats = await this.prisma.$queryRawUnsafe<
+      Array<{
+        id: string;
+        name: string;
+        email: string;
+        phone: string | null;
+        created_at: Date;
+        total_spent: number;
+        order_count: number;
+      }>
+    >(`
+      SELECT 
+        c.id,
+        c.name,
+        c.email,
+        c.phone,
+        c."createdAt" as created_at,
+        COALESCE(SUM(oi."unitPrice" * oi.qty), 0)::numeric as total_spent,
+        COUNT(DISTINCT o.id)::integer as order_count
+      FROM customers c
+      LEFT JOIN orders o ON o."customerId" = c.id AND o."paymentStatus" = 'PAID' AND o."deletedAt" IS NULL
+      LEFT JOIN order_items oi ON oi."orderId" = o.id
+      WHERE 1=1 ${searchCondition}
+      GROUP BY c.id, c.name, c.email, c.phone, c."createdAt"
+      ORDER BY ${sortColumn} ${orderDirection}
+      LIMIT ${limit}
+      OFFSET ${skip}
+    `);
+
+    // Get total count
+    const countResult = await this.prisma.$queryRawUnsafe<[{ count: bigint }]>(`
+      SELECT COUNT(*) as count
+      FROM customers c
+      WHERE 1=1 ${searchCondition}
+    `);
+
+    const total = Number(countResult[0].count);
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      data: customersWithStats.map((c) => ({
+        id: c.id,
+        name: c.name,
+        email: c.email,
+        phone: c.phone,
+        createdAt: c.created_at,
+        totalSpent: Number(c.total_spent),
+        orderCount: c.order_count,
+      })),
       meta: {
         total,
         totalPages,

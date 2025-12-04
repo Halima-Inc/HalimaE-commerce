@@ -23,13 +23,16 @@ import {
     CreateCustomerDto,
     UpdateAddressDto,
     ResponseCustomerDto,
-    ResponseAddressDto
+    ResponseAddressDto,
+    FilterCustomerDto,
+    ResponseCustomerFilteredDto,
+    ResponseCustomerWithStatsDto
 } from './dto';
 import { AddressService } from './address.service';
 import type { RequestWithCustomer } from '../../common/types/request-with-customer.type';
 
 @ApiTags('customers')
-@ApiExtraModels(CreateCustomerDto, UpdateCustomerDto, CreateAddressDto, UpdateAddressDto, ResponseCustomerDto, ResponseAddressDto)
+@ApiExtraModels(CreateCustomerDto, UpdateCustomerDto, CreateAddressDto, UpdateAddressDto, ResponseCustomerDto, ResponseAddressDto, FilterCustomerDto, ResponseCustomerFilteredDto, ResponseCustomerWithStatsDto)
 @Controller('customers')
 export class CustomerController {
     constructor(
@@ -68,25 +71,22 @@ export class CustomerController {
     @Roles('admin', 'employee')
     @UseGuards(JwtUserGuard, RolesGuard)
     @Get('admin/all')
-    @ApiOperation({ summary: 'Get all customers (Admin)', description: 'Retrieve a paginated list of all customers. Requires admin or employee authentication.' })
+    @ApiOperation({ 
+        summary: 'Get all customers (Admin)', 
+        description: 'Retrieve a paginated list of all customers. Supports sorting by name, email, createdAt, totalSpent (most paying customers), or orderCount (most frequent buyers). Requires admin or employee authentication.' 
+    })
     @ApiBearerAuth()
-    @ApiStandardResponse(Object, 'Customers retrieved successfully')
+    @ApiStandardResponse(ResponseCustomerFilteredDto, 'Customers retrieved successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
     @ApiStandardErrorResponse(403, 'Forbidden', 'Insufficient permissions')
     @HttpCode(HttpStatus.OK)
-    async getAllCustomers(
-        @Query('page') page: number,
-        @Query('limit') limit: number,
-        @Query('search') search: string,
-        @Query('sort') sort: string,
-        @Query('order') order: 'asc' | 'desc',
-    ) {
+    async getAllCustomers(@Query() filters: FilterCustomerDto) {
         return this.customerService.findAll(
-            page,
-            limit,
-            search,
-            sort,
-            order,
+            filters.page,
+            filters.limit,
+            filters.search,
+            filters.sort,
+            filters.order,
         );
     }
 
