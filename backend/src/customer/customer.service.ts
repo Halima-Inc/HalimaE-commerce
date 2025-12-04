@@ -158,50 +158,79 @@ export class CustomerService {
     order: 'asc' | 'desc',
     search: string = '',
   ) {
-    // Build search condition for raw query
-    const searchCondition = search
-      ? `AND (c.name ILIKE '%${search}%' OR c.email ILIKE '%${search}%')`
-      : '';
-
-    const orderDirection = order.toUpperCase();
     const sortColumn = sort === 'totalSpent' ? 'total_spent' : 'order_count';
+    const orderDirection = order === 'desc' ? 'DESC' : 'ASC';
 
-    // Get customers with aggregated order stats
-    const customersWithStats = await this.prisma.$queryRawUnsafe<
-      Array<{
-        id: string;
-        name: string;
-        email: string;
-        phone: string | null;
-        created_at: Date;
-        total_spent: number;
-        order_count: number;
-      }>
-    >(`
-      SELECT 
-        c.id,
-        c.name,
-        c.email,
-        c.phone,
-        c."createdAt" as created_at,
-        COALESCE(SUM(oi."unitPrice" * oi.qty), 0)::numeric as total_spent,
-        COUNT(DISTINCT o.id)::integer as order_count
-      FROM customers c
-      LEFT JOIN orders o ON o."customerId" = c.id AND o."paymentStatus" = 'PAID' AND o."deletedAt" IS NULL
-      LEFT JOIN order_items oi ON oi."orderId" = o.id
-      WHERE 1=1 ${searchCondition}
-      GROUP BY c.id, c.name, c.email, c.phone, c."createdAt"
-      ORDER BY ${sortColumn} ${orderDirection}
-      LIMIT ${limit}
-      OFFSET ${skip}
-    `);
+    const searchPattern = search ? `%${search}%` : null;
 
-    // Get total count
-    const countResult = await this.prisma.$queryRawUnsafe<[{ count: bigint }]>(`
-      SELECT COUNT(*) as count
-      FROM customers c
-      WHERE 1=1 ${searchCondition}
-    `);
+    // Get customers with aggregated order stats using safe parameterized query
+    const customersWithStats = search
+      ? await this.prisma.$queryRaw<
+          Array<{
+            id: string;
+            name: string;
+            email: string;
+            phone: string | null;
+            created_at: Date;
+            total_spent: number;
+            order_count: number;
+          }>
+        >`
+          SELECT 
+            c.id,
+            c.name,
+            c.email,
+            c.phone,
+            c."createdAt" as created_at,
+            COALESCE(SUM(oi."unitPrice" * oi.qty), 0)::numeric as total_spent,
+            COUNT(DISTINCT o.id)::integer as order_count
+          FROM customers c
+          LEFT JOIN orders o ON o."customerId" = c.id AND o."paymentStatus" = 'PAID' AND o."deletedAt" IS NULL
+          LEFT JOIN order_items oi ON oi."orderId" = o.id
+          WHERE c.name ILIKE ${searchPattern} OR c.email ILIKE ${searchPattern}
+          GROUP BY c.id, c.name, c.email, c.phone, c."createdAt"
+          ORDER BY ${Prisma.raw(sortColumn)} ${Prisma.raw(orderDirection)}
+          LIMIT ${limit}
+          OFFSET ${skip}
+        `
+      : await this.prisma.$queryRaw<
+          Array<{
+            id: string;
+            name: string;
+            email: string;
+            phone: string | null;
+            created_at: Date;
+            total_spent: number;
+            order_count: number;
+          }>
+        >`
+          SELECT 
+            c.id,
+            c.name,
+            c.email,
+            c.phone,
+            c."createdAt" as created_at,
+            COALESCE(SUM(oi."unitPrice" * oi.qty), 0)::numeric as total_spent,
+            COUNT(DISTINCT o.id)::integer as order_count
+          FROM customers c
+          LEFT JOIN orders o ON o."customerId" = c.id AND o."paymentStatus" = 'PAID' AND o."deletedAt" IS NULL
+          LEFT JOIN order_items oi ON oi."orderId" = o.id
+          GROUP BY c.id, c.name, c.email, c.phone, c."createdAt"
+          ORDER BY ${Prisma.raw(sortColumn)} ${Prisma.raw(orderDirection)}
+          LIMIT ${limit}
+          OFFSET ${skip}
+        `;
+
+    const countResult = search
+      ? await this.prisma.$queryRaw<[{ count: bigint }]>`
+          SELECT COUNT(*) as count
+          FROM customers c
+          WHERE c.name ILIKE ${searchPattern} OR c.email ILIKE ${searchPattern}
+        `
+      : await this.prisma.$queryRaw<[{ count: bigint }]>`
+          SELECT COUNT(*) as count
+          FROM customers c
+        `;
 
     const total = Number(countResult[0].count);
     const totalPages = Math.ceil(total / limit);
