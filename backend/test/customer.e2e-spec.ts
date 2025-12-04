@@ -52,11 +52,11 @@ describe('CustomerController (e2e)', () => {
             .send({ email: admin.email, password: 'password' }));
 
         expect(adminToken).toBeDefined();
-    });
+    }, 60000);
 
     afterAll(async () => {
         await teardownE2ETest(app, prisma);
-    });
+    }, 60000);
 
 
     describe('POST /customers/auth', () => {
@@ -464,6 +464,60 @@ describe('CustomerController (e2e)', () => {
             
             for (let i = 0; i < sortedNames.length - 1; i++) {
                 expect(sortedNames[i]).toBeGreaterThanOrEqual(sortedNames[i + 1]);
+            }
+        });
+
+        it('should get customers sorted by totalSpent (most paying customers)', async () => {
+            const response = await request(app.getHttpServer())
+                .get('/api/customers/admin/all?sort=totalSpent&order=desc')
+                .set('Authorization', `Bearer ${adminToken}`);
+
+            const data = expectSuccessResponse<any>(response, 200);
+            expect(data.data).toBeInstanceOf(Array);
+
+            // Verify response includes totalSpent field
+            if (data.data.length > 0) {
+                expect(data.data[0]).toHaveProperty('totalSpent');
+                expect(typeof data.data[0].totalSpent).toBe('number');
+            }
+
+            // Verify descending order by totalSpent
+            for (let i = 0; i < data.data.length - 1; i++) {
+                expect(data.data[i].totalSpent).toBeGreaterThanOrEqual(data.data[i + 1].totalSpent);
+            }
+        });
+
+        it('should get customers sorted by orderCount (most frequent buyers)', async () => {
+            const response = await request(app.getHttpServer())
+                .get('/api/customers/admin/all?sort=orderCount&order=desc')
+                .set('Authorization', `Bearer ${adminToken}`);
+
+            const data = expectSuccessResponse<any>(response, 200);
+            expect(data.data).toBeInstanceOf(Array);
+
+            // Verify response includes orderCount field
+            if (data.data.length > 0) {
+                expect(data.data[0]).toHaveProperty('orderCount');
+                expect(typeof data.data[0].orderCount).toBe('number');
+            }
+
+            // Verify descending order by orderCount
+            for (let i = 0; i < data.data.length - 1; i++) {
+                expect(data.data[i].orderCount).toBeGreaterThanOrEqual(data.data[i + 1].orderCount);
+            }
+        });
+
+        it('should get customers sorted by totalSpent in ascending order', async () => {
+            const response = await request(app.getHttpServer())
+                .get('/api/customers/admin/all?sort=totalSpent&order=asc')
+                .set('Authorization', `Bearer ${adminToken}`);
+
+            const data = expectSuccessResponse<any>(response, 200);
+            expect(data.data).toBeInstanceOf(Array);
+
+            // Verify ascending order by totalSpent
+            for (let i = 0; i < data.data.length - 1; i++) {
+                expect(data.data[i].totalSpent).toBeLessThanOrEqual(data.data[i + 1].totalSpent);
             }
         });
     });

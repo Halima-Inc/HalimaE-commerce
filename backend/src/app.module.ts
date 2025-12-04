@@ -13,6 +13,8 @@ import { CartModule } from './cart/cart.module';
 import { OrderModule } from './order/order.module';
 import { PaymentModule } from './payment/payment.module';
 import { EmailModule } from './email/email.module';
+import { CommonModule } from './common/common.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
     imports: [
@@ -37,6 +39,8 @@ import { EmailModule } from './email/email.module';
         OrderModule,
         PaymentModule,
         EmailModule,
+        CommonModule,
+        DashboardModule,
     ],
     providers: [
         {

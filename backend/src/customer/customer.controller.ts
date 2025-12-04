@@ -23,13 +23,16 @@ import {
     CreateCustomerDto,
     UpdateAddressDto,
     ResponseCustomerDto,
-    ResponseAddressDto
+    ResponseAddressDto,
+    FilterCustomerDto,
+    ResponseCustomerFilteredDto,
+    ResponseCustomerWithStatsDto
 } from './dto';
 import { AddressService } from './address.service';
 import type { RequestWithCustomer } from '../../common/types/request-with-customer.type';
 
 @ApiTags('customers')
-@ApiExtraModels(CreateCustomerDto, UpdateCustomerDto, CreateAddressDto, UpdateAddressDto, ResponseCustomerDto, ResponseAddressDto)
+@ApiExtraModels(CreateCustomerDto, UpdateCustomerDto, CreateAddressDto, UpdateAddressDto, ResponseCustomerDto, ResponseAddressDto, FilterCustomerDto, ResponseCustomerFilteredDto, ResponseCustomerWithStatsDto)
 @Controller('customers')
 export class CustomerController {
     constructor(
@@ -40,7 +43,7 @@ export class CustomerController {
     @UseGuards(JwtCustomerGuard)
     @Get('me')
     @ApiOperation({ summary: 'Get customer profile', description: 'Retrieve the authenticated customer\'s profile information' })
-    @ApiBearerAuth()
+    @ApiBearerAuth('JWT-auth')
     @ApiStandardResponse(ResponseCustomerDto, 'Profile retrieved successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
     @ApiStandardErrorResponse(404, 'Customer not found', 'Customer profile does not exist')
@@ -53,7 +56,7 @@ export class CustomerController {
     @UseGuards(JwtCustomerGuard)
     @Patch('me')
     @ApiOperation({ summary: 'Update customer profile', description: 'Update the authenticated customer\'s profile information' })
-    @ApiBearerAuth()
+    @ApiBearerAuth('JWT-auth')
     @ApiStandardResponse(ResponseCustomerDto, 'Profile updated successfully')
     @ApiStandardErrorResponse(400, 'Invalid update data', 'Validation failed for profile update')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
@@ -68,25 +71,22 @@ export class CustomerController {
     @Roles('admin', 'employee')
     @UseGuards(JwtUserGuard, RolesGuard)
     @Get('admin/all')
-    @ApiOperation({ summary: 'Get all customers (Admin)', description: 'Retrieve a paginated list of all customers. Requires admin or employee authentication.' })
-    @ApiBearerAuth()
-    @ApiStandardResponse(Object, 'Customers retrieved successfully')
+    @ApiOperation({ 
+        summary: 'Get all customers (Admin)', 
+        description: 'Retrieve a paginated list of all customers. Supports sorting by name, email, createdAt, totalSpent (most paying customers), or orderCount (most frequent buyers). Requires admin or employee authentication.' 
+    })
+    @ApiBearerAuth('JWT-auth')
+    @ApiStandardResponse(ResponseCustomerFilteredDto, 'Customers retrieved successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
     @ApiStandardErrorResponse(403, 'Forbidden', 'Insufficient permissions')
     @HttpCode(HttpStatus.OK)
-    async getAllCustomers(
-        @Query('page') page: number,
-        @Query('limit') limit: number,
-        @Query('search') search: string,
-        @Query('sort') sort: string,
-        @Query('order') order: 'asc' | 'desc',
-    ) {
+    async getAllCustomers(@Query() filters: FilterCustomerDto) {
         return this.customerService.findAll(
-            page,
-            limit,
-            search,
-            sort,
-            order,
+            filters.page,
+            filters.limit,
+            filters.search,
+            filters.sort,
+            filters.order,
         );
     }
 
@@ -95,7 +95,7 @@ export class CustomerController {
     @UseGuards(JwtCustomerGuard)
     @Post('addresses')
     @ApiOperation({ summary: 'Create customer address', description: 'Add a new address to the authenticated customer\'s account' })
-    @ApiBearerAuth()
+    @ApiBearerAuth('JWT-auth')
     @ApiStandardResponse(ResponseAddressDto, 'Address created successfully', 201)
     @ApiStandardErrorResponse(400, 'Invalid address data', 'Validation failed for address creation')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
@@ -107,7 +107,7 @@ export class CustomerController {
     @UseGuards(JwtCustomerGuard)
     @Get('addresses/:id')
     @ApiOperation({ summary: 'Get customer address', description: 'Retrieve a specific address of the authenticated customer' })
-    @ApiBearerAuth()
+    @ApiBearerAuth('JWT-auth')
     @ApiStandardResponse(ResponseAddressDto, 'Address retrieved successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
     @ApiStandardErrorResponse(404, 'Address not found', 'Address with the given ID was not found')
@@ -120,7 +120,7 @@ export class CustomerController {
     @UseGuards(JwtCustomerGuard)
     @Get('addresses')
     @ApiOperation({ summary: 'Get all customer addresses', description: 'Retrieve all addresses of the authenticated customer' })
-    @ApiBearerAuth()
+    @ApiBearerAuth('JWT-auth')
     @ApiStandardResponse(ResponseAddressDto, 'Addresses retrieved successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
     @HttpCode(HttpStatus.OK)
@@ -131,7 +131,7 @@ export class CustomerController {
     @UseGuards(JwtCustomerGuard)
     @Patch('addresses/:id')
     @ApiOperation({ summary: 'Update customer address', description: 'Update a specific address of the authenticated customer' })
-    @ApiBearerAuth()
+    @ApiBearerAuth('JWT-auth')
     @ApiStandardResponse(ResponseAddressDto, 'Address updated successfully')
     @ApiStandardErrorResponse(400, 'Invalid address data', 'Validation failed for address update')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
