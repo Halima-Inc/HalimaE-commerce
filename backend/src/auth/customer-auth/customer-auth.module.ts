@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { CustomerAuthController } from './customer-auth.controller';
 import { CustomerModule } from '../../customer/customer.module';
 import { JwtCustomerStrategy } from './strategies/jwt.customer.strategy';
+import { GoogleCustomerStrategy } from './strategies/google.customer.strategy';
 import { EmailModule } from '../../email/email.module';
 
 @Module({
@@ -20,7 +21,7 @@ import { EmailModule } from '../../email/email.module';
         EmailModule,
         CustomerModule,
     ],
-    providers: [CustomerAuthService, JwtCustomerStrategy],
+    providers: [CustomerAuthService, JwtCustomerStrategy, GoogleCustomerStrategy],
     controllers: [CustomerAuthController]
 })
 export class CustomerAuthModule {}
