@@ -476,4 +476,74 @@ export class CustomerService {
       data: { passwordHash: await argon2.hash(newPassword) },
     });
   }
+
+  async findOrCreateByGoogle(profile: { providerId: string; email: string; name: string }) {
+    this.logger.debug(
+      `Finding or creating customer by Google profile: ${profile.email}`,
+      CustomerService.name,
+    );
+
+    // Try to find existing customer by provider ID first
+    let customer = await this.prisma.customer.findFirst({
+      where: {
+        provider: 'GOOGLE',
+        providerId: profile.providerId,
+      },
+    });
+
+    if (customer) {
+      this.logger.log(
+        `Existing Google customer found: ${customer.email} (ID: ${customer.id})`,
+        CustomerService.name,
+      );
+      return customer;
+    }
+
+    // Check if customer exists with same email but different provider
+    customer = await this.prisma.customer.findUnique({
+      where: { email: profile.email },
+    });
+
+    if (customer) {
+      // Link Google account to existing customer
+      this.logger.log(
+        `Linking Google account to existing customer: ${customer.email} (ID: ${customer.id})`,
+        CustomerService.name,
+      );
+      
+      customer = await this.prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          provider: 'GOOGLE',
+          providerId: profile.providerId,
+        },
+      });
+      
+      return customer;
+    }
+
+    // Create new customer
+    this.logger.log(
+      `Creating new Google customer: ${profile.email}`,
+      CustomerService.name,
+    );
+
+    customer = await this.prisma.customer.create({
+      data: {
+        email: profile.email,
+        name: profile.name,
+        provider: 'GOOGLE',
+        providerId: profile.providerId,
+        status: 'ACTIVE',
+        passwordHash: null, // No password for OAuth users
+      },
+    });
+
+    this.logger.log(
+      `New Google customer created: ${customer.email} (ID: ${customer.id})`,
+      CustomerService.name,
+    );
+
+    return customer;
+  }
 }

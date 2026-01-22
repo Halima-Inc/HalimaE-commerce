@@ -227,7 +227,7 @@ model PasswordResetToken {
 model Customer {
   id           String    @id @default(uuid()) @db.Uuid
   email        String    @unique
-  provider     PROVIDER?
+  provider     PROVIDER? @default(LOCAL)
   providerId   String?
   name         String
   phone        String?

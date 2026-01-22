@@ -248,4 +248,57 @@ export class CustomerAuthService {
             message: 'Password has been reset successfully. Please log in with your new password.'
         };
     }
+
+    async googleLogin(profile: { providerId: string; email: string; name: string }, device?: string, ip?: string): Promise<ResponseAuthCustomerDto & { refresh_token: string }> {
+        this.logger.debug(`Google login attempt for email: ${profile.email}`, CustomerAuthService.name);
+
+        // Find or create customer by Google profile
+        const customer = await this.customerService.findOrCreateByGoogle(profile);
+
+        if (customer.status === Status.INACTIVE) {
+            this.logger.warn(`Google login failed. Account is inactive: ${customer.email}`, CustomerAuthService.name);
+            throw new UnauthorizedException('Account is inactive');
+        }
+
+        this.logger.log(`Google customer authenticated successfully: ${customer.email} (ID: ${customer.id})`, CustomerAuthService.name);
+
+        // Generate JWT tokens (same as regular login)
+        const payload = {
+            sub: customer.id,
+            email: customer.email,
+        };
+
+        const access_token = await this.jwtService.signAsync(payload, {
+            secret: this.configService.get<string>('JWT_CUSTOMER_SECRET')!,
+            expiresIn: this.configService.get<string>('JWT_CUSTOMER_EXPIRES_IN') ?? '15m' as any,
+        });
+
+        const refresh_token = await this.jwtService.signAsync(
+            {
+                ...payload,
+                jti: randomUUID(),
+            },
+            {
+                secret: this.configService.get<string>('JWT_CUSTOMER_REFRESH_SECRET')!,
+                expiresIn: this.configService.get<string>('JWT_CUSTOMER_REFRESH_EXPIRES_IN') ?? '7d' as any,
+            }
+        );
+
+        // Store refresh token
+        await this.customerService.storeRefreshToken(
+            customer.id,
+            await argon2.hash(refresh_token),
+            device,
+            ip
+        );
+
+        return {
+            name: customer.name,
+            email: customer.email,
+            phone: customer.phone ?? '',
+            status: customer.status ?? Status.ACTIVE,
+            access_token,
+            refresh_token,
+        };
+    }
 }

@@ -96,9 +96,8 @@ export class ProductController {
     }
 
 
-    // 1. create prduct with its variants routes
     @Post()
-    @ApiOperation({ summary: 'Create new product', description: 'Create a new product with its variants. Requires admin or employee role.' })
+    @ApiOperation({ summary: 'Create new product (Admin/Employee)', description: 'Create a new product with its variants. Requires admin or employee role.' })
     @ApiBearerAuth()
     @ApiStandardResponse(ResponseProductDto, 'Product created successfully', 201)
     @ApiStandardErrorResponse(400, 'Invalid product data', 'Validation failed for product creation')
@@ -114,9 +113,8 @@ export class ProductController {
         return this.productService.create(productDto);
     }
 
-    // 2. handel images upload separtly from product creatio to avoid multipart issues
     @Post(':id/images')
-    @ApiOperation({ summary: 'Upload product images', description: 'Upload multiple images for a product (max 10). Images are sent as multipart/form-data with optional metadata.' })
+    @ApiOperation({ summary: 'Upload product images (Admin/Employee)', description: 'Upload multiple images for a product (max 10). Images are sent as multipart/form-data with optional metadata.' })
     @ApiBearerAuth()
     @ApiConsumes('multipart/form-data')
     @ApiBody({
@@ -168,7 +166,7 @@ export class ProductController {
     }
 
     @Post(':id/variants')
-    @ApiOperation({ summary: 'Add product variant', description: 'Add a new variant (size, color, etc.) to an existing product' })
+    @ApiOperation({ summary: 'Add product variant (Admin/Employee)', description: 'Add a new variant (size, color, etc.) to an existing product' })
     @ApiBearerAuth()
     @ApiStandardResponse(ResponseVariantDto, 'Variant created successfully', 201)
     @ApiStandardErrorResponse(400, 'Invalid variant data', 'Validation failed for variant creation')
@@ -186,7 +184,7 @@ export class ProductController {
     }
 
     @Patch(':id')
-    @ApiOperation({ summary: 'Update product', description: 'Update product information (name, description, status, etc.)' })
+    @ApiOperation({ summary: 'Update product (Admin/Employee)', description: 'Update product information (name, description, status, etc.)' })
     @ApiBearerAuth()
     @ApiStandardResponse(ResponseProductDto, 'Product updated successfully')
     @ApiStandardErrorResponse(400, 'Invalid update data', 'Validation failed for product update')
@@ -204,7 +202,7 @@ export class ProductController {
     }
 
     @Patch(':id/variants/:variantId')
-    @ApiOperation({ summary: 'Update product variant', description: 'Update a specific variant of a product' })
+    @ApiOperation({ summary: 'Update product variant (Admin/Employee)', description: 'Update a specific variant of a product' })
     @ApiBearerAuth()
     @ApiStandardResponse(ResponseVariantDto, 'Variant updated successfully')
     @ApiStandardErrorResponse(400, 'Invalid update data', 'Validation failed for variant update')
@@ -223,9 +221,8 @@ export class ProductController {
     }
 
 
-    // replace product's single image
     @Put(':id/images/:imageId')
-    @ApiOperation({ summary: 'Replace product image', description: 'Replace an existing product image with a new one' })
+    @ApiOperation({ summary: 'Replace product image (Admin/Employee)', description: 'Replace an existing product image with a new one' })
     @ApiBearerAuth()
     @ApiConsumes('multipart/form-data')
     @ApiBody({
@@ -259,7 +256,7 @@ export class ProductController {
     }
 
     @Delete(':id')
-    @ApiOperation({ summary: 'Delete product', description: 'Delete a product and all its associated variants and images' })
+    @ApiOperation({ summary: 'Delete product (Admin/Employee)', description: 'Delete a product and all its associated variants and images' })
     @ApiBearerAuth()
     @ApiStandardNoContentResponse('Product deleted successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
@@ -274,7 +271,7 @@ export class ProductController {
 
 
     @Delete(':id/variants/:variantId')
-    @ApiOperation({ summary: 'Delete product variant', description: 'Delete a specific variant of a product' })
+    @ApiOperation({ summary: 'Delete product variant (Admin/Employee)', description: 'Delete a specific variant of a product' })
     @ApiBearerAuth()
     @ApiStandardNoContentResponse('Variant deleted successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
@@ -289,7 +286,7 @@ export class ProductController {
 
 
     @Delete(':id/images/:imageId')
-    @ApiOperation({ summary: 'Delete product image', description: 'Delete a specific image of a product' })
+    @ApiOperation({ summary: 'Delete product image (Admin/Employee)', description: 'Delete a specific image of a product' })
     @ApiBearerAuth()
     @ApiStandardNoContentResponse('Image deleted successfully')
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
