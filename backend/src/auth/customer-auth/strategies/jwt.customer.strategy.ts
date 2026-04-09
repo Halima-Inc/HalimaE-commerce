@@ -11,14 +11,10 @@ export class JwtCustomerStrategy extends PassportStrategy(Strategy, 'jwt-custome
         private readonly configService: ConfigService,
         private readonly customerService: CustomerService,
     ) {
-        const jwtSecret = configService.get<string>('JWT_CUSTOMER_SECRET');
-        if (!jwtSecret) {
-            throw new Error('JWT_CUSTOMER_SECRET is not defined in the environment variables');
-        }
         super({
             jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
             ignoreExpiration: false,
-            secretOrKey: jwtSecret,
+            secretOrKey: configService.getOrThrow<string>('JWT_CUSTOMER_SECRET'),
         });
     }
 

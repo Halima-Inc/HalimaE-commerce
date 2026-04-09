@@ -62,7 +62,7 @@ export class PaymentController {
     @UseGuards(JwtUserGuard)
     @ApiBearerAuth()
     @ApiOperation({ 
-        summary: 'Record cash on delivery payment',
+        summary: 'Record cash on delivery payment (Admin/Employee)',
         description: 'Records a cash payment for an order. Used by admin or courier when cash is received upon delivery.'
     })
     @ApiParam({ 

@@ -94,7 +94,7 @@ export class CategoryController {
     @Post()
     @ApiBearerAuth('JWT-auth')
     @ApiOperation({
-        summary: 'Create a new category',
+        summary: 'Create a new category (Admin/Employee)',
         description: 'Create a new category (Admin/Employee only)'
     })
     @ApiBody({ type: CreateCategoryDto })
@@ -112,7 +112,7 @@ export class CategoryController {
     @Patch(':id')
     @ApiBearerAuth('JWT-auth')
     @ApiOperation({
-        summary: 'Update a category',
+        summary: 'Update a category (Admin/Employee)',
         description: 'Update an existing category (Admin/Employee only)'
     })
     @ApiParam({ name: 'id', description: 'Category ID', example: '123e4567-e89b-12d3-a456-426614174000' })
@@ -129,7 +129,7 @@ export class CategoryController {
 
     // Admin-only routes
 
-    @Delete('admin/:id')
+    @Delete(':id')
     @Roles('admin')
     @UseGuards(JwtUserGuard, RolesGuard)
     @ApiBearerAuth('JWT-auth')

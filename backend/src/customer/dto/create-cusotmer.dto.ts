@@ -8,6 +8,7 @@ import {
 } from "class-validator";
 import { Status } from "@prisma/client";
 import { ApiProperty } from "@nestjs/swagger";
+import { PROVIDER } from "@prisma/client";
 
 export class CreateCustomerDto {
     @ApiProperty({
@@ -68,12 +69,12 @@ export class CreateCustomerDto {
 
     @ApiProperty({
         description: 'OAuth provider name (e.g., google, facebook)',
-        example: 'google',
+        example: PROVIDER.GOOGLE,
         required: false
     })
     @IsOptional()
-    @IsString()
-    readonly provider?: string;
+    @IsEnum(PROVIDER)
+    readonly provider?: PROVIDER;
 
     @ApiProperty({
         description: 'OAuth provider user ID',

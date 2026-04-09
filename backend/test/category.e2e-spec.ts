@@ -186,7 +186,7 @@ describe('CategoryController (e2e)', () => {
             const womensCategory = await prisma.category.findFirst({ where: { slug: 'womens-clothing' } });
             expect(womensCategory).not.toBeNull();
             return request(app.getHttpServer())
-                .delete(`/api/categories/admin/${womensCategory!.id}`)
+                .delete(`/api/categories/${womensCategory!.id}`)
                 .set('Authorization', `Bearer ${employeeToken}`)
                 .expect(403) // Forbidden, as only admin can delete
                 .expect(res => {
@@ -198,7 +198,7 @@ describe('CategoryController (e2e)', () => {
             const womensCategory = await prisma.category.findFirst({ where: { slug: 'womens-clothing' } });
             expect(womensCategory).not.toBeNull();
             await request(app.getHttpServer())
-                .delete(`/api/categories/admin/${womensCategory!.id}`)
+                .delete(`/api/categories/${womensCategory!.id}`)
                 .set('Authorization', `Bearer ${adminToken}`)
                 .expect(400)
                 .expect(res => {
@@ -210,7 +210,7 @@ describe('CategoryController (e2e)', () => {
             const womensCategory = await prisma.category.findFirst({ where: { slug: 'dresses' } });
             expect(womensCategory).not.toBeNull();
             await request(app.getHttpServer())
-                .delete(`/api/categories/admin/${womensCategory!.id}`)
+                .delete(`/api/categories/${womensCategory!.id}`)
                 .set('Authorization', `Bearer ${adminToken}`)
                 .expect(204); // no content
 

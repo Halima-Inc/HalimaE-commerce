@@ -8,8 +8,9 @@ import {
     Req,
     UnauthorizedException,
     UseGuards,
+    Get,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiExtraModels, ApiBearerAuth, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiExtraModels, ApiBearerAuth, ApiCookieAuth, ApiExcludeEndpoint, ApiResponse } from '@nestjs/swagger';
 import { ApiStandardResponse, ApiStandardErrorResponse } from '../../../common/swagger/api-response.decorator';
 import { CustomerAuthService } from './customer-auth.service';
 import { CreateCustomerDto } from '../../customer/dto';
@@ -20,6 +21,7 @@ import type { RequestWithCustomer } from '../../../common/types/request-with-cus
 import { JwtCustomerGuard } from './guards/jwt.customer.guard';
 import { ResetPasswordDto, ResetPasswordRequestDto } from '../dto';
 import { Throttle } from '@nestjs/throttler';
+import { AuthGuard } from '@nestjs/passport';
 
 
 
@@ -57,6 +59,60 @@ export class CustomerAuthController {
         });
 
         return result;
+    }
+
+    @Get('google')
+    @UseGuards(AuthGuard('google'))
+    @ApiOperation({
+        summary: 'Initiate Google OAuth login',
+        description: 'Initiates Google OAuth 2.0 authentication flow. Redirects user to Google\'s consent screen where they can sign in with their Google account. After successful authentication, Google redirects back to the callback endpoint with user profile information.'
+    })
+    @ApiResponse({
+        status: 302,
+        description: 'Redirects to Google OAuth consent screen'
+    })
+    @ApiStandardErrorResponse(500, 'Internal Server Error', 'Failed to initiate Google OAuth flow')
+    googleAuth() {
+        // Guard handles redirect to Google
+    }
+
+    @Get('google/callback')
+    @UseGuards(AuthGuard('google'))
+    @ApiOperation({
+        summary: 'Google OAuth callback (Internal)',
+        description: 'Internal endpoint called by Google after successful authentication. Processes the OAuth response, creates or links the customer account, generates custom JWT tokens (access & refresh), sets refresh token as httpOnly cookie, and redirects to frontend with access token. This endpoint should not be called directly.'
+    })
+    @ApiResponse({
+        status: 302,
+        description: 'Redirects to frontend with access_token query parameter. Refresh token is set as httpOnly cookie.'
+    })
+    @ApiStandardErrorResponse(401, 'Unauthorized', 'Google OAuth authentication failed')
+    @ApiStandardErrorResponse(500, 'Internal Server Error', 'Failed to process Google OAuth callback')
+    @ApiExcludeEndpoint() // Hide from Swagger as it's called by Google
+    async googleAuthRedirect(
+        @Req() req: Request & { user: any },
+        @Res() res: Response
+    ) {
+        const { refresh_token, ...result } = await this.customerAuthService.googleLogin(
+            req.user,
+            req.headers['user-agent'],
+            req.ip
+        );
+
+        // Set refresh token as httpOnly cookie
+        res.cookie('refresh_token', refresh_token, {
+            httpOnly: true,
+            secure: this.configService.get('NODE_ENV') === 'production',
+            sameSite: 'strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+            path: '/api/customers/auth'
+        });
+
+        // Redirect to frontend with access token
+        const frontendUrl = this.configService.get('FRONTEND_URL') || 'http://localhost:3000';
+        const redirectUrl = `${frontendUrl}/auth/google/callback?access_token=${result.access_token}`;
+        
+        res.redirect(redirectUrl);
     }
 
     @Post('login')

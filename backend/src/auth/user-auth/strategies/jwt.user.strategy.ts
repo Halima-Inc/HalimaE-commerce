@@ -10,13 +10,9 @@ export class JwtUserStrategy extends PassportStrategy(Strategy, 'jwt-user') {
         private readonly configService: ConfigService,
         private readonly userService: UsersService
     ) {
-        const jwtSecret = configService.get<string>('JWT_USER_SECRET');
-        if (!jwtSecret) {
-            throw new Error('JWT_USER_SECRET is not defined in environment variables');
-        }
         super({
             jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-            secretOrKey: jwtSecret,
+            secretOrKey: configService.getOrThrow<string>('JWT_USER_SECRET'),
         });
     }
 
