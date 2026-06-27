@@ -129,7 +129,7 @@ model Role {
   name String
 
   users       User[]
-//   permissions RolePermission[]`
+  permissions RolePermission[]
 
   @@map("roles")
 }
@@ -140,120 +140,32 @@ model User {
   provider     PROVIDER?
   providerId   String?
   name         String
+  phone        String?
   passwordHash String
+  status       Status?   @default(ACTIVE)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   roleId String? @db.Uuid
   role   Role?   @relation(fields: [roleId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  refreshTokens RefreshToken[]
-  passwordResetTokens PasswordResetToken[]
+  refreshTokens        RefreshToken[]
+  passwordResetTokens  PasswordResetToken[]
+  addresses            Address[]
+  carts                Cart[]
+  orders               Order[]
 
   @@index([roleId])
-  @@map("users")
-}
-
-// model Permission {
-//   id   String @id @default(uuid()) @db.Uuid
-//   name String
-
-//   roles RolePermission[]
-
-//   @@map("permissions")
-// }
-
-// model RolePermission {
-//   roleId       String     @db.Uuid()
-//   permissionId String     @db.Uuid()
-//   role         Role       @relation(fields: [roleId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-//   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-//   @@id([roleId, permissionId])
-//   @@index([roleId])
-//   @@index([permissionId])
-//   @@map("role_permissions")
-// }
-
-model RefreshToken {
-  id        String   @id @default(uuid()) @db.Uuid
-  tokenHash String
-  userId    String   @db.Uuid
-  user      User     @relation(fields: [userId], references: [id])
-
-  createdAt DateTime @default(now())
-  expiresAt DateTime
-  isRevoked Boolean  @default(false)
-
-  device    String?
-  ip        String?
-    @@index([userId])
-    @@map("refresh_tokens")
-    @@index([tokenHash])
-}
-
-model CustomerRefreshToken {
-  id        String   @id @default(uuid()) @db.Uuid
-  tokenHash String
-  customerId    String   @db.Uuid
-  customer      Customer     @relation(fields: [customerId], references: [id])
-
-  createdAt DateTime @default(now())
-  expiresAt DateTime
-  isRevoked Boolean  @default(false)
-
-  device    String?
-  ip        String?
-  
-  @@index([customerId])
-  @@map("customer_refresh_tokens")
-  @@index([tokenHash])
-}
-
-model PasswordResetToken {
-  id          String   @id @default(uuid()) @db.Uuid
-  tokenHash   String   @unique
-  
-  userId      String?   @db.Uuid
-  user        User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  customerId  String?   @db.Uuid
-  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  expiresAt   DateTime
-  createdAt   DateTime @default(now())
-
-  @@index([userId])
-  @@map("password_reset_tokens")
-}
-
-model Customer {
-  id           String    @id @default(uuid()) @db.Uuid
-  email        String    @unique
-  provider     PROVIDER?
-  providerId   String?
-  name         String
-  phone        String?
-  passwordHash String?
-  status       Status?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  refreshTokens CustomerRefreshToken[]
-  passwordResetTokens PasswordResetToken[]
-
-  addresses     Address[]
-  carts         Cart[]
-  orders        Order[]
- 
   @@index([status])
   @@index([createdAt])
   @@index([status, createdAt])
-  @@index([email])
-  @@map("customers")
+  @@map("users")
 }
 
 model Address {
   id         String   @id @default(uuid()) @db.Uuid
-  customerId String   @db.Uuid
-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  userId     String   @db.Uuid
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   firstName  String
   lastName   String
   phone      String?
@@ -264,22 +176,75 @@ model Address {
   postalCode String
   isDefault  Boolean  @default(false)
   createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt 
+  updatedAt  DateTime @updatedAt
 
   billingOrders  Order[] @relation("BillingAddress")
   shippingOrders Order[] @relation("ShippingAddress")
 
-  @@index([customerId])
-  @@index([customerId, isDefault])
+  @@index([userId])
+  @@index([userId, isDefault])
   @@map("addresses")
 }
 
+model Permission {
+  id   String @id @default(uuid()) @db.Uuid
+  name String
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid()
+  permissionId String     @db.Uuid()
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+
+  device    String?
+  ip        String?
+  
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String   @unique
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
 model Cart {
-  id         String   @id @default(uuid()) @db.Uuid
+  id     String   @id @default(uuid()) @db.Uuid
   customerId String   @db.Uuid
-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   items CartItem[]
 
@@ -292,12 +257,12 @@ model Cart {
 model CartItem {
   id        String         @id @default(uuid()) @db.Uuid
   cartId    String         @db.Uuid
-  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade) 
+  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
   variantId String         @db.Uuid
   variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
   qty       Int
 
-  @@unique([cartId, variantId]) 
+  @@unique([cartId, variantId])
   @@index([cartId])
   @@index([variantId])
   @@index([cartId, variantId])
@@ -307,8 +272,8 @@ model CartItem {
 model Order {
   id                String            @id @default(uuid()) @db.Uuid
   orderNo           String            @unique
-  customerId        String            @db.Uuid
-  customer          Customer          @relation(fields: [customerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  userId            String            @db.Uuid
+  user              User              @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   currency          String
   status            ORDERSTATUS
   paymentStatus     PAYMENTSTATUS
@@ -325,15 +290,15 @@ model Order {
   payments  Payment[]
   shipments Shipment[]
 
-  @@index([customerId])
+  @@index([userId])
   @@index([billingAddressId])
   @@index([shippingAddressId])
   @@index([status])
-  @@index([customerId, status])
+  @@index([userId, status])
   @@index([placedAt])
   @@index([paymentStatus])
   @@index([fulfillmentStatus])
-  @@index([customerId, placedAt])
+  @@index([userId, placedAt])
   @@map("orders")
 }
 
@@ -478,6 +443,24 @@ enum PAYMENTMETHOD {
   CASH_ON_DELIVERY
 }
 
+model WebhookProcessingLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  provider      String
+  providerRef   String
+  payloadHash   String
+  signatureHash String
+  status        String   @default("PENDING")
+  errorMessage  String?  @db.Text
+  processedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([provider, providerRef, signatureHash])
+  @@index([provider, status])
+  @@index([createdAt])
+  @@map("webhook_processing_logs")
+}
+
 // model Webhook {
 //   id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
 //   source      String
@@ -489,13 +472,135 @@ enum PAYMENTMETHOD {
 //   @@map("webhooks")
 // }
 
-// model OutboxEvent {
-//   id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-//   eventType    String
-//   aggregateId  String
-//   payload      Json?
-//   occurredAt   DateTime @default(now())
-//   processedAt  DateTime?
+enum OUTBOXSTATUS {
+  PENDING
+  PROCESSING
+  PUBLISHED
+  DEAD_LETTER
+}
 
-//   @@map("outbox_events")
-// }
+model OutboxEvent {
+  id             String      @id @default(uuid()) @db.Uuid
+  eventId        String      @unique
+  eventName      String
+  aggregateId    String
+  providerRef    String
+  idempotencyKey String
+  version        Int
+  occurredAt     DateTime
+  payload        Json
+  status         OUTBOXSTATUS @default(PENDING)
+  attempts       Int         @default(0)
+  nextAttemptAt  DateTime    @default(now())
+  lastError      String?     @db.Text
+  publishedAt    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([idempotencyKey])
+  @@index([eventName, status])
+  @@map("outbox_events")
+}
+
+model DashboardRevenueSnapshot {
+  id        Int      @id @default(autoincrement())
+  date      DateTime @unique
+  revenue   Decimal  @db.Decimal(12, 2) @default(0)
+  orders    Int      @default(0)
+  itemsSold Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date])
+  @@map("dashboard_revenue_snapshots")
+}
+
+model OrdersByStatus {
+  id        Int       @id @default(autoincrement())
+  status    ORDERSTATUS
+  date      DateTime
+  count     Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([status, date])
+  @@index([date])
+  @@map("dashboard_orders_by_status")
+}
+
+model BestSellingProduct {
+  id          Int      @id @default(autoincrement())
+  productId   String   @db.Uuid
+  periodStart DateTime
+  periodEnd   DateTime
+  qtySold     Int      @default(0)
+  revenue     Decimal  @db.Decimal(12, 2) @default(0)
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@unique([productId, periodStart])
+  @@map("dashboard_best_selling_products")
+}
+
+model LowStockProduct {
+  id                 Int      @id @default(autoincrement())
+  variantId          String   @db.Uuid @unique
+  productId          String   @db.Uuid
+  stockOnHand        Int
+  lowStockThreshold  Int
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
+
+  @@map("dashboard_low_stock_products")
+}
+
+model OrdersByLocation {
+  id        Int      @id @default(autoincrement())
+  location  String
+  date      DateTime
+  count     Int      @default(0)
+  revenue   Decimal  @db.Decimal(12, 2) @default(0)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([location, date])
+  @@map("dashboard_orders_by_location")
+}
+
+model OrderStatistics {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  intValue  Int?
+  decValue  Decimal? @db.Decimal(12, 2)
+  jsonValue Json?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("dashboard_order_statistics")
+}
+
+model CustomerCounters {
+  id         Int      @id @default(autoincrement())
+  customerId String   @db.Uuid @unique
+  orders     Int      @default(0)
+  lifetimeValue Decimal @db.Decimal(12,2) @default(0)
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@map("dashboard_customer_counters")
+}
+
+model ProductsByCategory {
+  id          Int      @id @default(autoincrement())
+  categoryId  String   @db.Uuid
+  periodStart DateTime
+  periodEnd   DateTime
+  qtySold     Int      @default(0)
+  revenue     Decimal  @db.Decimal(12, 2) @default(0)
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@unique([categoryId, periodStart])
+  @@map("dashboard_products_by_category")
+}
