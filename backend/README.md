@@ -1,280 +1,154 @@
-# Halima E-Commerce Backend API
+# Halima E-Commerce Backend Service
 
-A robust, production-ready e-commerce backend built with NestJS, Prisma, and PostgreSQL. This API provides comprehensive e-commerce functionality including product management, user authentication, shopping cart, orders, and payment processing.
+A high-performance e-commerce API built with NestJS, Prisma, and PostgreSQL. This service powers product catalogs, persistence carts, order lifecycles, analytical dashboards, and payment gateway integrations.
 
-## 🚀 Features
+## Core Architectural Concepts
 
-### Core Functionality
-- **Product Management**: Full CRUD operations with variants, pricing, and inventory tracking
-- **Category System**: Hierarchical categories with parent-child relationships
-- **Shopping Cart**: Persistent cart with real-time inventory validation
-- **Order Management**: Complete order lifecycle from placement to fulfillment
-- **User Authentication**: Dual authentication system for customers and admin users
-- **Address Management**: Multiple shipping and billing addresses per customer
-- **Payment Processing**: Payment integration with refund support
-- **Shipment Tracking**: Order fulfillment and delivery tracking
+The service is structured according to strict architectural guidelines to ensure separation of concerns, high testability, and technology independence.
 
-### Technical Features
-- **JWT Authentication**: Separate JWT strategies for customers and admin users
-- **Role-Based Access Control**: Admin and customer role separation
-- **Rate Limiting**: Three-tier throttling (3/1s, 20/10s, 100/60s)
-- **API Documentation**: Auto-generated Swagger/OpenAPI documentation
-- **Image Upload**: Product image management with file storage
-- **Database Optimization**: Comprehensive indexing for high-performance queries
-- **Logging**: Winston-based logging with daily rotation
-- **Security**: Helmet middleware, CORS configuration, password hashing with Argon2
-- **Validation**: Request validation with class-validator and class-transformer
-- **E2E Testing**: Comprehensive end-to-end test coverage
+### Onion Architecture (Clean Architecture)
+The backend codebase strictly follows the Onion Architecture. Core business logic is shielded from external delivery and framework layers.
+- Domain Layer (src/category/domain, src/auth/domain, etc.): Defines the aggregate roots, entities, domain exceptions, and repository interfaces (contracts). This layer is entirely pure and free of ORM (Prisma) or framework (NestJS) imports.
+- Application Layer (src/category/application, src/auth/application, etc.): Coordinates domain entities to execute specific use cases. Uses commands and queries, with one handler per use case. Accesses infrastructure services only through interfaces.
+- Infrastructure Layer (src/category/infrastructure, src/auth/infrastructure, etc.): Implements application and domain interfaces. Houses Prisma repository implementations, payment adapters, object storage clients, and encryption services.
+- Presentation Layer (src/category/presentation, src/auth/presentation, etc.): Manages request delivery. Houses HTTP controllers, custom guards, decorators, and request validation DTOs.
 
-## 📋 Prerequisites
+### Transactional Outbox Design Pattern
+To ensure atomic consistency and reliable message delivery without coupling modules, the service employs a Transactional Outbox design pattern.
+- Whenever an operation changes state and requires notification of other modules (for example, Capturing a Payment), the event is saved to the Outbox table in the database as part of the same ACID transaction.
+- Background publishers dispatch outbox events to interested modules (e.g. updating Order payment status asynchronously).
+- This decouples the database transaction boundary from external event subscribers.
 
-- Node.js >= 18.x
-- PostgreSQL >= 14.x
-- npm >= 9.x
+### Real-Time Projections and Dynamic Fallbacks
+The analytical dashboard fetches aggregated views from projection tables (such as SalesByPeriod, OrdersByStatus, LowStockProduct) for optimized response times. If projections are empty (e.g., in developer or fresh seeding environments), the Dashboard Service dynamically aggregates database metrics across Order Items, Users, and Product Variants directly from database tables using secure Prisma queries, ensuring seamless local developer testing.
 
-## 🛠️ Installation
+---
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/AmrHalima/HalimaE-commerce.git
-   cd HalimaE-commerce/backend
-   ```
+## Infrastructure Dependencies
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
+This project relies on the following infrastructure dependencies, configured via environment variables. Refer to the env.example file for exact configuration names:
 
-3. **Environment Configuration**
+1. PostgreSQL
+   - Primary database storing the application state.
+   - Migrations are managed via Prisma migrate.
 
-   Create a `.env` file in the backend directory:
+2. Redis
+   - Serves as the caching backend and rate-limiter storage to optimize analytical queries and prevent API abuse.
 
-   ```env
-   # Database
-   DATABASE_URL="postgresql://user:password@localhost:5432/halima_ecommerce?schema=public"
+3. Object Storage (AWS S3 or MinIO)
+   - Stores media and images for product variants.
+   - Configures connection endpoint, bucket name, and access keys.
 
-   # Application
-   NODE_ENV=development
-   PORT=3000
-   FRONTEND_URL=http://localhost:3001
+4. Paymob Payment Gateway
+   - Integrates digital wallets and credit card processing.
+   - Validates Paymob webhook callbacks using HMAC signature verification secrets.
 
-   # JWT Secrets (generate strong random strings)
-   JWT_USER_SECRET=your_secure_admin_jwt_secret_here
-   JWT_CUSTOMER_SECRET=your_secure_customer_jwt_secret_here
-   ```
+5. SMTP Mail Server
+   - Dispatches transactional emails (user welcome, checkout invoice, password resets) using secure SMTP credentials.
 
-4. **Database Setup**
+6. Google OAuth Client
+   - Handles social credentials verification for customer single sign-on flows.
 
-   ```bash
-   # Generate Prisma Client
-   npx prisma generate
+---
 
-   # Run migrations
-   npx prisma migrate deploy
+## Environment Setup
 
-   # Seed database (optional)
-   npm run db:seed
-   ```
+Create a .env file in the backend root directory using .env.example as a template:
 
-## 🚀 Running the Application
-
-### Development
 ```bash
-# Start in watch mode
-npm run start:dev
-
-# Start in debug mode
-npm run start:debug
+cp .env.example .env
 ```
 
-### Production
+Define the configuration values:
+- DATABASE_URL: PostgreSQL database connection string.
+- REDIS_HOST, REDIS_PORT: Redis connection details.
+- AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET: Storage coordinates.
+- PAYMOB_API_KEY, PAYMOB_HMAC_SECRET: Paymob payment secrets.
+- SMTP_HOST, SMTP_USER, SMTP_PASS: Mail server credentials.
+
+---
+
+## Database Management
+
+Manage the schema and migrations using the following Prisma commands:
+
 ```bash
-# Build the application
+# Generate Prisma client
+npx prisma generate
+
+# Apply migrations to database
+npx prisma migrate deploy
+
+# Seed initial roles and administrative users
+npm run db:seed
+
+# Reset database (Development only - destructive)
+npx prisma migrate reset
+
+# Open Prisma Studio to browse tables
+npx prisma studio
+```
+
+---
+
+## Development and Production Execution
+
+```bash
+# Install dependencies
+npm install
+
+# Run in development watch mode
+npm run start:dev
+
+# Run in debug mode
+npm run start:debug
+
+# Build production bundle
 npm run build
 
-# Start production server
+# Run production server
 npm run start:prod
 ```
 
-The API will be available at `http://localhost:3000`
+Once running, the API documentation is available at:
+- Swagger Documentation: http://localhost:3000/api/docs
+- OpenAPI JSON: http://localhost:3000/api/docs-json
 
-## 📚 API Documentation
+---
 
-Once the application is running, visit:
-- **Swagger UI**: `http://localhost:3000/api/docs`
-- **OpenAPI JSON**: `http://localhost:3000/api/docs-json`
+## Testing Strategy
 
-## 🗄️ Database Schema
+The backend has extensive E2E testing to verify authentication, carts, categories, dashboard computations, orders, products, and payment processing under real-world scenarios.
 
-### Main Entities
+### E2E Test Setup and Parallel Execution
+- The E2E tests are configured to run in parallel without database cross-contamination.
+- Each test run executes on isolated schemas, reset automatically between test specs.
+- The `cleanDatabase` function in `jest-e2e.setup.ts` truncates all operational and projection tables between tests.
 
-#### Product System
-- **Product**: Core product information with status and soft delete
-- **ProductVariant**: SKU-based variants (size, color, material)
-- **VariantPrice**: Multi-currency pricing with compare-at prices
-- **VariantInventory**: Stock management with low-stock alerts
-- **ProductImage**: Product images with sorting and alt text
-- **Category**: Hierarchical category structure
-
-#### Customer & Orders
-- **Customer**: Customer accounts with authentication
-- **Address**: Multiple addresses per customer
-- **Cart**: Persistent shopping cart with items
-- **Order**: Complete order with status tracking
-- **OrderItem**: Individual line items with snapshots
-- **Payment**: Payment records with provider integration
-- **Refund**: Refund processing
-- **Shipment**: Shipping and tracking information
-
-#### Administration
-- **User**: Admin user accounts
-- **Role**: Role-based access control
-
-## 🏗️ Project Structure
-
-```
-backend/
-├── src/
-│   ├── auth/                  # Authentication modules
-│   │   ├── customer-auth/     # Customer JWT auth
-│   │   └── user-auth/         # Admin user JWT auth
-│   ├── cart/                  # Shopping cart
-│   ├── category/              # Category management
-│   ├── customer/              # Customer & address management
-│   ├── product/               # Product, variant, image services
-│   ├── users/                 # Admin user management
-│   ├── logger/                # Winston logging service
-│   ├── prisma/                # Prisma database service
-│   └── utils/                 # Shared utilities
-├── common/
-│   ├── decorators/            # Custom decorators
-│   ├── dto/                   # Shared DTOs
-│   ├── filters/               # Exception filters
-│   └── interceptors/          # Response interceptors
-├── prisma/
-│   ├── schema.prisma          # Database schema
-│   ├── migrations/            # Migration history
-│   └── seed.ts                # Database seeding
-├── test/                      # E2E tests
-└── public/uploads/            # Uploaded files
-```
-
-## 🧪 Testing
+Run tests using the following commands:
 
 ```bash
-# Unit tests
+# Run unit tests
 npm run test
 
-# E2E tests
+# Run all E2E tests
 npm run test:e2e
 
-# Test coverage
+# Run a specific test suite (e.g. dashboard)
+npx jest --config ./test/jest-e2e.json dashboard.e2e-spec.ts
+
+# Run tests with coverage
 npm run test:cov
-
-# Watch mode
-npm run test:watch
 ```
 
-## 🔒 Security Features
+---
 
-- **Password Hashing**: Argon2 algorithm for secure password storage
-- **JWT Tokens**: Separate tokens for customers and admin users
-- **Rate Limiting**: Automatic throttling to prevent abuse
-- **Helmet**: Security headers configuration
-- **CORS**: Controlled cross-origin resource sharing
-- **Input Validation**: All inputs validated with class-validator
-- **SQL Injection Protection**: Prisma's query parameterization
-- **ConfigService**: Environment variables managed securely
-
-## 📊 Performance Optimizations
-
-- **Database Indexes**: 15+ strategic indexes on frequently queried fields
-- **Query Optimization**: Efficient queries with `findUnique()` on indexed fields
-- **Connection Pooling**: Prisma connection management
-- **Response Caching**: Structured response format for easy caching
-- **Lazy Loading**: Related entities loaded on demand
-- **File Upload Optimization**: Size and type restrictions
-
-## 🔧 Database Scripts
+## Code Quality
 
 ```bash
-# Create a new migration
-npx prisma migrate dev --name migration_name
-
-# Apply migrations
-npx prisma migrate deploy
-
-# Reset database (development only)
-npx prisma migrate reset
-
-# Open Prisma Studio
-npx prisma studio
-
-# Seed the database
-npm run db:seed
-```
-
-## 📝 Code Quality
-
-```bash
-# Linting
+# Lint code
 npm run lint
 
-# Format code
+# Format code files
 npm run format
 ```
-
-## 🌐 Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | Required |
-| `NODE_ENV` | Environment (development/production/test) | development |
-| `PORT` | Application port | 3000 |
-| `FRONTEND_URL` | Frontend origin for CORS | Required |
-| `JWT_USER_SECRET` | Admin JWT secret | Required |
-| `JWT_CUSTOMER_SECRET` | Customer JWT secret | Required |
-
-## 🐳 Docker Support (Coming Soon)
-
-Docker configuration will be added for containerized deployment.
-
-## 🚀 Deployment
-
-### Production Checklist
-1. Set `NODE_ENV=production`
-2. Use strong, unique JWT secrets
-3. Enable SSL/TLS for database connections
-4. Configure production logging (disable console logs)
-5. Set up database backups
-6. Configure file upload storage (S3, CDN)
-7. Enable application monitoring
-8. Set appropriate rate limits
-9. Configure CORS for production domain
-
-### Recommended Hosting
-- **API**: Heroku, AWS, DigitalOcean, Railway
-- **Database**: AWS RDS, DigitalOcean Managed Database, Supabase
-- **File Storage**: AWS S3, Cloudinary, DigitalOcean Spaces
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'feat: add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the Apache-2.0 License - see the [LICENSE](../LICENSE) file for details.
-
-## 👨‍💻 Author
-
-**OmarElprolosy66**
-
-## Acknowledgments
-
-- [NestJS](https://nestjs.com/) - The progressive Node.js framework
-- [Prisma](https://www.prisma.io/) - Next-generation ORM
-- [PostgreSQL](https://www.postgresql.org/) - The world's most advanced open source database
