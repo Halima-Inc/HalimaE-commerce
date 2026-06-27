@@ -253,7 +253,7 @@ export class CategoryController {
 
     // Admin-only routes
 
-    @Delete('admin/:id')
+    @Delete(':id')
     @RequiredRoles('admin')
     @UseGuards(JwtAccessTokenGuard, RolesGuard)
     @ApiBearerAuth('JWT-auth')
