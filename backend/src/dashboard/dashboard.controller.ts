@@ -1,18 +1,29 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiExtraModels } from '@nestjs/swagger';
-import { ApiStandardResponse, ApiStandardErrorResponse } from '../../common/swagger/api-response.decorator';
+import {
+    ApiTags,
+    ApiOperation,
+    ApiBearerAuth,
+    ApiExtraModels,
+} from '@nestjs/swagger';
+import {
+    ApiStandardResponse,
+    ApiStandardErrorResponse,
+} from '../common/swagger/api-response.decorator';
 import { CacheService } from '../common/cache.service';
-import { 
-    DashboardDto, 
-    SalesByPeriodDto, 
-    PeakPeriodDto, 
-    OrdersByLocationDto, 
-    BestSellingProductDto, 
-    LowStockProductDto 
+import {
+    DashboardDto,
+    SalesByPeriodDto,
+    PeakPeriodDto,
+    OrdersByLocationDto,
+    BestSellingProductDto,
+    LowStockProductDto,
 } from './dto';
 import { DashboardService } from './dashboard.service';
-import { JwtUserGuard, RolesGuard } from '../auth/user-auth/guards';
-import { Roles } from '../auth/user-auth/decorators';
+import {
+    JwtAccessTokenGuard,
+    RequiredRoles,
+    RolesGuard,
+} from '../auth/presentation';
 
 @ApiTags('dashboard')
 @ApiBearerAuth('JWT-auth')
@@ -22,10 +33,10 @@ import { Roles } from '../auth/user-auth/decorators';
     PeakPeriodDto,
     OrdersByLocationDto,
     BestSellingProductDto,
-    LowStockProductDto
+    LowStockProductDto,
 )
-@UseGuards(JwtUserGuard, RolesGuard)
-@Roles('admin', 'employee')
+@UseGuards(JwtAccessTokenGuard, RolesGuard)
+@RequiredRoles('admin', 'employee')
 @Controller('dashboard')
 export class DashboardController {
     constructor(
@@ -36,15 +47,24 @@ export class DashboardController {
     @Get()
     @ApiOperation({
         summary: 'Get dashboard metrics',
-        description: 'Returns cached dashboard metrics including revenue, orders, customers, products, and inventory statistics. Metrics are computed every 5 minutes by a background job and cached for performance.',
+        description:
+            'Returns cached dashboard metrics including revenue, orders, customers, products, and inventory statistics. Metrics are read from dashboard projections and cached for performance.',
     })
-    @ApiStandardResponse(DashboardDto, 'Dashboard metrics retrieved successfully')
+    @ApiStandardResponse(
+        DashboardDto,
+        'Dashboard metrics retrieved successfully',
+    )
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
-    @ApiStandardErrorResponse(403, 'Forbidden', 'Admin or employee role required')
+    @ApiStandardErrorResponse(
+        403,
+        'Forbidden',
+        'Admin or employee role required',
+    )
     async getDashboardMetrics(): Promise<DashboardDto> {
         // Try to get from cache first
-        const cached = await this.cacheService.get<DashboardDto>('dashboard-metrics');
-        
+        const cached =
+            await this.cacheService.get<DashboardDto>('dashboard-metrics');
+
         if (cached) {
             return cached;
         }
@@ -52,18 +72,26 @@ export class DashboardController {
         // If no cache, compute on-demand (first request or cache expired)
         const metrics = await this.dashboardService.computeDashboardMetrics();
         await this.cacheService.set('dashboard-metrics', metrics, 60 * 10); // Cache for 10 minutes
-        
+
         return metrics;
     }
 
     @Get('refresh')
     @ApiOperation({
         summary: 'Force refresh dashboard metrics',
-        description: 'Bypasses the cache and recomputes all dashboard metrics immediately. Use this when you need the most up-to-date data. The newly computed metrics are cached for subsequent requests.',
+        description:
+            'Bypasses the cache and reloads dashboard metrics from projections immediately. Use this when you need the most up-to-date projection state. The refreshed metrics are cached for subsequent requests.',
     })
-    @ApiStandardResponse(DashboardDto, 'Dashboard metrics refreshed successfully')
+    @ApiStandardResponse(
+        DashboardDto,
+        'Dashboard metrics refreshed successfully',
+    )
     @ApiStandardErrorResponse(401, 'Unauthorized', 'Authentication required')
-    @ApiStandardErrorResponse(403, 'Forbidden', 'Admin or employee role required')
+    @ApiStandardErrorResponse(
+        403,
+        'Forbidden',
+        'Admin or employee role required',
+    )
     async refreshDashboardMetrics(): Promise<DashboardDto> {
         const metrics = await this.dashboardService.computeDashboardMetrics();
         await this.cacheService.set('dashboard-metrics', metrics, 60 * 10);

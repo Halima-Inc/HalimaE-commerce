@@ -1,33 +1,48 @@
 import { Module } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { DashboardController } from './dashboard.controller';
-import { ScheduleModule } from '@nestjs/schedule';
-import { DashboardProcessor } from './dashboard.processor';
-import { BullModule } from '@nestjs/bull';
-import { ConfigService } from '@nestjs/config';
-import { DashboardScheduler } from './dashboard.scheduler';
+import { AuthModule } from '../auth/auth.module';
 import { CacheService } from '../common/cache.service';
+import { DashboardOrderEventConsumer } from './infrastructure/services/dashboard-order-event.consumer';
+import { DashboardPaymentEventConsumer } from './infrastructure/services/dashboard-payment-event.consumer';
+import { CompositeDashboardOrderEventConsumer } from './infrastructure/services/composite-dashboard-order-event.consumer';
+import { CompositeDashboardPaymentEventConsumer } from './infrastructure/services/composite-dashboard-payment-event.consumer';
+import { DASHBOARD_PROJECTION_REPOSITORY } from './dashboard.tokens';
+import { PrismaProjectionRepository } from './infrastructure/repositories/prisma-projection.repository';
+import {
+    DASHBOARD_ORDER_EVENT_CONSUMER,
+    DASHBOARD_PAYMENT_EVENT_CONSUMER,
+} from './dashboard.tokens';
+import { OrderProjector } from './infrastructure/projectors/order.projector';
+import { PaymentProjector } from './infrastructure/projectors/payment.projector';
 
 @Module({
-    imports: [
-        ScheduleModule.forRoot(),
-        BullModule.registerQueueAsync({
-            name: 'dashboard-queue',
-            useFactory: (configService: ConfigService) => ({
-                redis: {
-                    host: configService.get('REDIS_HOST') ?? '127.0.0.1',
-                    port: configService.get<number>('REDIS_PORT') ?? 6379,
-                },
-            }),
-            inject: [ConfigService],
-        }),
-    ],
+    imports: [AuthModule],
     providers: [
         DashboardService,
-        DashboardProcessor,
-        DashboardScheduler,
         CacheService,
+        DashboardOrderEventConsumer,
+        DashboardPaymentEventConsumer,
+        OrderProjector,
+        PaymentProjector,
+        {
+            provide: DASHBOARD_ORDER_EVENT_CONSUMER,
+            useClass: CompositeDashboardOrderEventConsumer,
+        },
+        {
+            provide: DASHBOARD_PAYMENT_EVENT_CONSUMER,
+            useClass: CompositeDashboardPaymentEventConsumer,
+        },
+        {
+            provide: DASHBOARD_PROJECTION_REPOSITORY,
+            useClass: PrismaProjectionRepository,
+        },
     ],
     controllers: [DashboardController],
+    exports: [
+        DASHBOARD_ORDER_EVENT_CONSUMER,
+        DASHBOARD_PAYMENT_EVENT_CONSUMER,
+        DASHBOARD_PROJECTION_REPOSITORY,
+    ],
 })
 export class DashboardModule {}
