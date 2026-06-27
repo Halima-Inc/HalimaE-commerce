@@ -1,13 +1,17 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+    Injectable,
+    NotFoundException,
+    BadRequestException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { LogService } from '../logger/log.service';
-import { 
-    CreateCartDto, 
-    AddToCartDto, 
-    UpdateCartItemDto, 
-    CartResponseDto, 
-    CheckoutCartDto 
+import { LogService } from '../common/log.service';
+import {
+    CreateCartDto,
+    AddToCartDto,
+    UpdateCartItemDto,
+    CartResponseDto,
+    CheckoutCartDto,
 } from './dto';
 
 @Injectable()
@@ -16,19 +20,22 @@ export class CartService {
         private readonly prismaService: PrismaService,
         private readonly logger: LogService,
         private readonly configService: ConfigService,
-    ) { }
+    ) {}
 
     async createCart(createCartDto: CreateCartDto) {
         return this.prismaService.cart.create({
             data: {
-                customerId: createCartDto.customerId
-            }
+                customerId: createCartDto.customerId,
+            },
         });
     }
 
     async getCart(customerId: string): Promise<CartResponseDto> {
-        this.logger.debug(`Getting cart for customer: ${customerId}`, 'CartService');
-        
+        this.logger.debug(
+            `Getting cart for customer: ${customerId}`,
+            'CartService',
+        );
+
         const cart = await this.prismaService.cart.findFirst({
             where: { customerId },
             include: {
@@ -50,37 +57,48 @@ export class CartService {
                                             take: 1, // Only first image for cart
                                             select: {
                                                 url: true,
-                                                alt: true
-                                            }
-                                        }
-                                    }
+                                                alt: true,
+                                            },
+                                        },
+                                    },
                                 },
-                                prices: true
-                            }
-                        }
-                    }
-                }
-            }
+                                prices: true,
+                            },
+                        },
+                    },
+                },
+            },
         });
 
-        this.logger.debug(`Cart query result for customer ${customerId}: ${cart ? 'found' : 'null'}`, 'CartService');
+        this.logger.debug(
+            `Cart query result for customer ${customerId}: ${cart ? 'found' : 'null'}`,
+            'CartService',
+        );
 
         if (!cart) {
-            this.logger.debug(`No cart found for customer: ${customerId}`, 'CartService');
+            this.logger.debug(
+                `No cart found for customer: ${customerId}`,
+                'CartService',
+            );
             throw new NotFoundException('Cart not found');
         }
 
         // Calculate total items
         const totalItems = cart.items.reduce((sum, item) => sum + item.qty, 0);
-        this.logger.debug(`Cart for customer ${customerId} has ${cart.items.length} items, total quantity: ${totalItems}`, 'CartService');
+        this.logger.debug(
+            `Cart for customer ${customerId} has ${cart.items.length} items, total quantity: ${totalItems}`,
+            'CartService',
+        );
 
         return {
             ...cart,
-            totalItems
+            totalItems,
         } as CartResponseDto;
     }
 
-    async getCartForCheckout(customerId: string): Promise<CheckoutCartDto | null> {
+    async getCartForCheckout(
+        customerId: string,
+    ): Promise<CheckoutCartDto | null> {
         const cart = await this.prismaService.cart.findFirst({
             where: { customerId },
             include: {
@@ -96,7 +114,7 @@ export class CartService {
                                 product: {
                                     select: {
                                         name: true,
-                                    }
+                                    },
                                 },
                                 prices: {
                                     select: {
@@ -117,7 +135,7 @@ export class CartService {
 
         return {
             ...cart,
-            totalItems
+            totalItems,
         } as CheckoutCartDto;
     }
 
@@ -125,14 +143,14 @@ export class CartService {
         const result = await this.prismaService.cartItem.aggregate({
             where: {
                 cart: {
-                    customerId
-                }
+                    customerId,
+                },
             },
             _sum: {
-                qty: true
-            }
+                qty: true,
+            },
         });
-        
+
         return result._sum.qty || 0;
     }
 
@@ -149,19 +167,27 @@ export class CartService {
                 }
 
                 if (!variant.isActive) {
-                    throw new BadRequestException('Product variant is not available');
+                    throw new BadRequestException(
+                        'Product variant is not available',
+                    );
                 }
 
                 if (!variant.inventory) {
-                    this.logger.error(`Variant ${addToCartDto.variantId} has no inventory record`, '', 'CartService');
-                    throw new BadRequestException('Product inventory not found');
+                    this.logger.error(
+                        `Variant ${addToCartDto.variantId} has no inventory record`,
+                        '',
+                        'CartService',
+                    );
+                    throw new BadRequestException(
+                        'Product inventory not found',
+                    );
                 }
 
                 const currentCartItem = await prisma.cartItem.findFirst({
                     where: {
                         cart: { customerId },
-                        variantId: addToCartDto.variantId
-                    }
+                        variantId: addToCartDto.variantId,
+                    },
                 });
 
                 const currentQty = currentCartItem?.qty || 0;
@@ -169,25 +195,26 @@ export class CartService {
 
                 if (variant.inventory.stockOnHand < newTotalQty) {
                     throw new BadRequestException(
-                        `Only ${variant.inventory.stockOnHand} units available`
+                        `Only ${variant.inventory.stockOnHand} units available`,
                     );
                 }
 
                 let cart = await prisma.cart.findFirst({
-                    where: { customerId }
+                    where: { customerId },
                 });
 
                 if (!cart) {
                     cart = await prisma.cart.create({
-                        data: { customerId }
+                        data: { customerId },
                     });
                 }
 
                 const existingItem = await prisma.cartItem.findFirst({
                     where: {
                         cartId: cart.id,
-                        variantId: addToCartDto.variantId
-                    }, select: { id: true }
+                        variantId: addToCartDto.variantId,
+                    },
+                    select: { id: true },
                 });
 
                 if (existingItem) {
@@ -195,45 +222,49 @@ export class CartService {
                         where: { id: existingItem.id },
                         data: {
                             qty: {
-                                increment: addToCartDto.qty
-                            }
-                        }
+                                increment: addToCartDto.qty,
+                            },
+                        },
                     });
                 } else {
                     return prisma.cartItem.create({
                         data: {
                             cartId: cart.id,
                             variantId: addToCartDto.variantId,
-                            qty: addToCartDto.qty
-                        }
+                            qty: addToCartDto.qty,
+                        },
                     });
                 }
             });
-        } catch (error) {
+        } catch (error: any) {
             this.logger.error(
                 `Failed to add item to cart for customer ${customerId}`,
                 error.stack,
-                'CartService'
+                'CartService',
             );
             throw error;
         }
     }
 
-    async updateCartItem(customerId: string, itemId: string, updateCartItemDto: UpdateCartItemDto) {
+    async updateCartItem(
+        customerId: string,
+        itemId: string,
+        updateCartItemDto: UpdateCartItemDto,
+    ) {
         const cartItem = await this.prismaService.cartItem.findFirst({
             where: {
                 id: itemId,
                 cart: {
-                    customerId
-                }
+                    customerId,
+                },
             },
             include: {
                 variant: {
                     include: {
-                        inventory: { select: { stockOnHand: true } }
-                    }
-                }
-            }
+                        inventory: { select: { stockOnHand: true } },
+                    },
+                },
+            },
         });
 
         if (!cartItem) {
@@ -241,7 +272,11 @@ export class CartService {
         }
 
         if (!cartItem.variant.inventory) {
-            this.logger.error(`Variant ${cartItem.variantId} has no inventory record`, '', 'CartService');
+            this.logger.error(
+                `Variant ${cartItem.variantId} has no inventory record`,
+                '',
+                'CartService',
+            );
             throw new BadRequestException('Product inventory not found');
         }
 
@@ -255,15 +290,15 @@ export class CartService {
 
         if (updateCartItemDto.qty > cartItem.variant.inventory.stockOnHand) {
             throw new BadRequestException(
-                `Only ${cartItem.variant.inventory.stockOnHand} units available`
+                `Only ${cartItem.variant.inventory.stockOnHand} units available`,
             );
         }
 
         return this.prismaService.cartItem.update({
             where: { id: itemId },
             data: {
-                qty: updateCartItemDto.qty
-            }
+                qty: updateCartItemDto.qty,
+            },
         });
     }
 
@@ -272,9 +307,9 @@ export class CartService {
             where: {
                 id: itemId,
                 cart: {
-                    customerId
-                }
-            }
+                    customerId,
+                },
+            },
         });
 
         if (!cartItem) {
@@ -282,13 +317,13 @@ export class CartService {
         }
 
         return this.prismaService.cartItem.delete({
-            where: { id: itemId }
+            where: { id: itemId },
         });
     }
 
     async clearCart(customerId: string) {
         const cart = await this.prismaService.cart.findFirst({
-            where: { customerId }
+            where: { customerId },
         });
 
         if (!cart) {
@@ -296,68 +331,96 @@ export class CartService {
         }
 
         await this.prismaService.cartItem.deleteMany({
-            where: { cartId: cart.id }
+            where: { cartId: cart.id },
         });
     }
 
     async calculateCartTotal(customerId: string, currency: string = 'EGP') {
         const cart = await this.getCartForCheckout(customerId);
-        const isDevelopment = this.configService.get<string>('NODE_ENV') === 'development';
-        
+        const isDevelopment =
+            this.configService.get<string>('NODE_ENV') === 'development';
+
         if (isDevelopment) {
-            this.logger.debug(`Calculate cart total - Cart found: ${!!cart}, Items: ${cart?.items.length || 0}, Currency: ${currency}`, 'CartService');
+            this.logger.debug(
+                `Calculate cart total - Cart found: ${!!cart}, Items: ${cart?.items.length || 0}, Currency: ${currency}`,
+                'CartService',
+            );
         }
-        
+
         if (!cart || cart.items.length === 0) {
             return { total: 0, currency, itemCount: 0 };
         }
 
         let total = 0;
-        
-        cart.items.forEach(item => {
-            const price = item.variant.prices.find(p => p.currency === currency);
-            
+
+        cart.items.forEach((item) => {
+            const price = item.variant.prices.find(
+                (p) => p.currency === currency,
+            );
+
             if (price) {
                 const amount = Number(price.amount);
 
                 if (amount < 0) {
-                    this.logger.error(`Invalid negative price detected for variant ${item.variant.id}`, '', 'CartService');
+                    this.logger.error(
+                        `Invalid negative price detected for variant ${item.variant.id}`,
+                        '',
+                        'CartService',
+                    );
                     throw new BadRequestException('Invalid price detected');
                 }
 
                 if (item.qty < 0) {
-                    this.logger.error(`Invalid negative quantity detected for cart item`, '', 'CartService');
+                    this.logger.error(
+                        `Invalid negative quantity detected for cart item`,
+                        '',
+                        'CartService',
+                    );
                     throw new BadRequestException('Invalid quantity detected');
                 }
-                
+
                 const itemTotal = amount * item.qty;
 
                 if (!Number.isFinite(itemTotal)) {
-                    this.logger.error(`Price calculation overflow for variant ${item.variant.id}`, '', 'CartService');
+                    this.logger.error(
+                        `Price calculation overflow for variant ${item.variant.id}`,
+                        '',
+                        'CartService',
+                    );
                     throw new BadRequestException('Price calculation error');
                 }
-                
+
                 total += itemTotal;
-                
+
                 if (isDevelopment) {
-                    this.logger.debug(`Price found - Amount: ${amount}, Qty: ${item.qty}, Item Total: ${itemTotal}`, 'CartService');
+                    this.logger.debug(
+                        `Price found - Amount: ${amount}, Qty: ${item.qty}, Item Total: ${itemTotal}`,
+                        'CartService',
+                    );
                 }
             } else {
                 if (isDevelopment) {
-                    this.logger.debug(`No price found for currency: ${currency}`, 'CartService');
+                    this.logger.debug(
+                        `No price found for currency: ${currency}`,
+                        'CartService',
+                    );
                 }
             }
         });
 
         if (total < 0 || !Number.isFinite(total)) {
-            this.logger.error(`Invalid cart total calculated: ${total}`, '', 'CartService');
+            this.logger.error(
+                `Invalid cart total calculated: ${total}`,
+                '',
+                'CartService',
+            );
             throw new BadRequestException('Cart total calculation error');
         }
 
         return {
             total: Number(total.toFixed(2)),
             currency,
-            itemCount: cart.totalItems
+            itemCount: cart.totalItems,
         };
     }
 }
