@@ -1,535 +1,445 @@
-import { INestApplication, LoggerService } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import * as argon2 from 'argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { CreateUserDto } from '../src/users/dto';
-import { UsersService } from '../src/users/users.service';
-import { setupE2ETest, teardownE2ETest, getUniqueTestData } from './jest-e2e.setup';
-import { LogService } from '../src/logger/log.service';
 import {
-    expectSuccessResponse,
+    getUniqueTestData,
+    resetE2EDatabase,
+    setupE2ETest,
+    teardownE2ETest,
+} from './jest-e2e.setup';
+import {
     expectErrorResponse,
-    extractAuthTokenFromResponse
+    expectSuccessResponse,
+    extractAuthTokenFromResponse,
 } from './test-utils';
 
-describe('UserAuthController (e2e)', () => {
+jest.setTimeout(30000);
+
+type AuthFixture = {
+    adminToken: string;
+    adminRoleId: string;
+    customerRoleId: string;
+};
+
+describe('AuthModule (e2e)', () => {
     let app: INestApplication;
     let prisma: PrismaService;
-    let adminRoleId: string;
-    let logger: LoggerService;
 
     beforeAll(async () => {
         ({ app, prisma } = await setupE2ETest());
-        logger = app.get<LoggerService>(LogService);
-
-        // Create admin role
-        const adminRole = await prisma.role.create({ data: { name: 'admin' } });
-        adminRoleId = adminRole.id;
     }, 30000);
 
     afterAll(async () => {
-        if (app) {
+        if (app && prisma) {
             await teardownE2ETest(app, prisma);
         }
     }, 60000);
 
-    describe('Authentication Flow', () => {
-        let adminDto: CreateUserDto;
-        let adminToken: string;
+    beforeEach(async () => {
+        await resetE2EDatabase(app);
+    });
 
-        beforeAll(async () => {
-            // Use unique test data to avoid conflicts
-            const uniqueData = getUniqueTestData('admin-auth');
-            adminDto = {
-                name: uniqueData.name,
-                email: uniqueData.email,
-                password: 'password123',
-                roleId: adminRoleId
-            };
+    async function seedAuthFixture(): Promise<AuthFixture> {
+        const permissions = await Promise.all(
+            ['roles.read', 'roles.create', 'roles.update', 'roles.delete'].map(
+                (name) => prisma.permission.create({ data: { name } }),
+            ),
+        );
 
-            // Create admin user directly
-            const usersService = app.get(UsersService);
-            await usersService.create(adminDto);
+        const [adminRole, customerRole] = await Promise.all([
+            prisma.role.create({ data: { name: 'admin' } }),
+            prisma.role.create({ data: { name: 'customer' } }),
+        ]);
 
-            // Login to get admin token for authenticated signup tests
-            const loginResponse = await request(app.getHttpServer())
-                .post('/api/admin/auth/login')
-                .send({ email: adminDto.email, password: adminDto.password });
-
-            adminToken = extractAuthTokenFromResponse(loginResponse);
+        await prisma.rolePermission.createMany({
+            data: permissions.map((permission) => ({
+                roleId: adminRole.id,
+                permissionId: permission.id,
+            })),
         });
 
-        describe('POST /admin/auth/signup', () => {
-            it('should register a new user and set refresh_token cookie (admin only)', async () => {
-                const uniqueData = getUniqueTestData('admin-signup');
-                const signupDto = {
-                    name: uniqueData.name,
-                    email: uniqueData.email,
+        const admin = getUniqueTestData('auth-admin');
+        await prisma.user.create({
+            data: {
+                email: admin.email,
+                name: admin.name,
+                passwordHash: await argon2.hash('password123'),
+                roleId: adminRole.id,
+            },
+        });
+
+        const loginResponse = await request(app.getHttpServer())
+            .post('/api/auth/login')
+            .send({ email: admin.email, password: 'password123' })
+            .expect(200);
+
+        return {
+            adminToken: extractAuthTokenFromResponse(loginResponse),
+            adminRoleId: adminRole.id,
+            customerRoleId: customerRole.id,
+        };
+    }
+
+    function getRefreshCookie(response: request.Response): string {
+        const cookies = response.headers['set-cookie'] as unknown as string[];
+        expect(Array.isArray(cookies)).toBe(true);
+
+        const refreshCookie = cookies.find((cookie) =>
+            cookie.startsWith('refresh_token='),
+        );
+        expect(refreshCookie).toBeDefined();
+
+        return refreshCookie!;
+    }
+
+    describe('POST /api/auth/register', () => {
+        it('registers a customer, returns tokens, and sets the refresh cookie', async () => {
+            const fixture = await seedAuthFixture();
+            const unique = getUniqueTestData('auth-register');
+
+            const response = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: unique.email,
+                    name: unique.name,
                     password: 'password123',
-                    roleId: adminRoleId
-                };
+                    phone: '01012345678',
+                })
+                .expect(201);
 
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/signup')
-                    .set('Authorization', `Bearer ${adminToken}`)
-                    .send(signupDto)
-                    .expect(201);
-
-                const data = expectSuccessResponse<any>(response, 201);
-
-                // Verify response contains access_token but NOT refresh_token
-                expect(data.access_token).toBeDefined();
-                expect(data.refresh_token).toBeUndefined();
-                expect(data.email).toBe(signupDto.email);
-                expect(data.name).toBe(signupDto.name);
-
-                // Verify refresh_token cookie is set
-                const cookies = response.headers['set-cookie'] as unknown as string[];
-                expect(cookies).toBeDefined();
-                expect(Array.isArray(cookies)).toBe(true);
-
-                const refreshCookie = cookies.find((c: string) => c.startsWith('refresh_token='))!;
-                expect(refreshCookie).toBeDefined();
-
-                // Verify cookie attributes
-                expect(refreshCookie).toContain('HttpOnly');
-                expect(refreshCookie).toContain('Path=/api/admin/auth');
-                expect(refreshCookie).toContain('SameSite=Strict');
-
-                // Verify user can login with new credentials
-                const loginResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: signupDto.email, password: signupDto.password })
-                    .expect(201);
-
-                const loginData = expectSuccessResponse<any>(loginResponse, 201);
-                expect(loginData.access_token).toBeDefined();
-                expect(loginData.email).toBe(signupDto.email);
+            const data = expectSuccessResponse<any>(response, 201);
+            expect(data.accessToken).toEqual(expect.any(String));
+            expect(data.refreshToken).toEqual(expect.any(String));
+            expect(data.user).toMatchObject({
+                email: unique.email,
+                name: unique.name,
+                phone: '01012345678',
             });
 
-            it('should reject signup with duplicate email', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/signup')
-                    .set('Authorization', `Bearer ${adminToken}`)
-                    .send(adminDto)
-                    .expect(409);
+            const refreshCookie = getRefreshCookie(response);
+            expect(refreshCookie).toContain('HttpOnly');
+            expect(refreshCookie).toContain('Path=/api/auth');
+            expect(refreshCookie).toContain('SameSite=Strict');
 
-                expectErrorResponse(response, 409);
+            const savedUser = await prisma.user.findUnique({
+                where: { email: unique.email },
             });
-
-            it('should reject signup with invalid email format', async () => {
-                const uniqueData = getUniqueTestData('admin-invalid');
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/signup')
-                    .set('Authorization', `Bearer ${adminToken}`)
-                    .send({
-                        name: uniqueData.name,
-                        email: 'invalid-email',
-                        password: 'password123',
-                        roleId: adminRoleId
-                    })
-                    .expect(400);
-
-                expectErrorResponse(response, 400);
-            });
-
-            it('should reject signup with weak password', async () => {
-                const uniqueData = getUniqueTestData('admin-weak');
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/signup')
-                    .set('Authorization', `Bearer ${adminToken}`)
-                    .send({
-                        name: uniqueData.name,
-                        email: uniqueData.email,
-                        password: '123',
-                        roleId: adminRoleId
-                    })
-                    .expect(400);
-
-                expectErrorResponse(response, 400);
-            });
-
-            it('should reject signup with missing required fields', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/signup')
-                    .set('Authorization', `Bearer ${adminToken}`)
-                    .send({
-                        email: 'test@test.com'
-                    })
-                    .expect(400);
-
-                expectErrorResponse(response, 400);
-            });
-
-            it('should reject signup without authentication', async () => {
-                const uniqueData = getUniqueTestData('admin-noauth');
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/signup')
-                    .send({
-                        name: uniqueData.name,
-                        email: uniqueData.email,
-                        password: 'password123',
-                        roleId: adminRoleId
-                    })
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-            });
+            expect(savedUser?.roleId).toBe(fixture.customerRoleId);
         });
 
-        describe('POST /admin/auth/login', () => {
-            it('should login and set refresh_token cookie', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+        it('rejects duplicate email and invalid payloads', async () => {
+            await seedAuthFixture();
+            const unique = getUniqueTestData('auth-duplicate');
 
-                const data = expectSuccessResponse<any>(response, 201);
+            await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: unique.email,
+                    name: unique.name,
+                    password: 'password123',
+                })
+                .expect(201);
 
-                // Verify response contains access_token but NOT refresh_token
-                expect(data.access_token).toBeDefined();
-                expect(data.refresh_token).toBeUndefined();
-                expect(data.email).toBe(adminDto.email);
-                expect(data.name).toBe(adminDto.name);
+            const duplicateResponse = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: unique.email,
+                    name: unique.name,
+                    password: 'password123',
+                })
+                .expect(409);
+            expectErrorResponse(duplicateResponse, 409);
 
-                // Verify refresh_token cookie is set
-                const cookies = response.headers['set-cookie'] as unknown as string[];
-                expect(cookies).toBeDefined();
-                expect(Array.isArray(cookies)).toBe(true);
-
-                const refreshCookie = cookies.find((c: string) => c.startsWith('refresh_token='))!;
-                expect(refreshCookie).toBeDefined();
-
-                // Verify cookie attributes
-                expect(refreshCookie).toContain('HttpOnly');
-                expect(refreshCookie).toContain('Path=/api/admin/auth');
-                expect(refreshCookie).toContain('SameSite=Strict');
-            });
-
-            it('should reject login with invalid credentials', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: adminDto.email, password: 'wrongpassword' })
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-            });
-
-            it('should reject login with non-existent user', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: 'nonexistent@test.com', password: 'password123' })
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-            });
+            const invalidResponse = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({ email: 'bad-email', name: 'A', password: '123' })
+                .expect(400);
+            expectErrorResponse(invalidResponse, 400);
         });
 
-        describe('POST /admin/auth/refresh-token', () => {
-            it('should refresh access token using cookie', async () => {
-                // Login to get a fresh cookie
-                const loginResp = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+        it('fails clearly when the required customer role is missing', async () => {
+            const response = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: getUniqueTestData('auth-no-role').email,
+                    name: 'No Customer Role',
+                    password: 'password123',
+                })
+                .expect(404);
 
-                const loginCookies = loginResp.headers['set-cookie'] as unknown as string[];
-                const loginCookie = loginCookies.find((c: string) => c.startsWith('refresh_token='))!;
-                const loginToken = extractAuthTokenFromResponse(loginResp);
+            const error = expectErrorResponse(response, 404);
+            expect(error.code).toBe('ROLE_NOT_FOUND');
+        });
+    });
 
-                // Use the cookie to refresh
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', loginCookie)
-                    .expect(200);
+    describe('POST /api/auth/login', () => {
+        it('logs in with valid credentials and rejects invalid credentials', async () => {
+            await seedAuthFixture();
+            const unique = getUniqueTestData('auth-login');
 
-                const data = expectSuccessResponse<any>(response, 200);
+            await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: unique.email,
+                    name: unique.name,
+                    password: 'password123',
+                })
+                .expect(201);
 
-                // Verify new access token is returned
-                expect(data.access_token).toBeDefined();
-                expect(data.access_token).not.toBe(loginToken); // Should be a new token
+            const response = await request(app.getHttpServer())
+                .post('/api/auth/login')
+                .send({ email: unique.email, password: 'password123' })
+                .expect(200);
 
-                // Verify new refresh_token cookie is set (token rotation)
-                const cookies = response.headers['set-cookie'] as unknown as string[];
-                expect(cookies).toBeDefined();
+            const data = expectSuccessResponse<any>(response, 200);
+            expect(data.accessToken).toEqual(expect.any(String));
+            expect(data.refreshToken).toEqual(expect.any(String));
+            expect(data.user.email).toBe(unique.email);
+            expect(getRefreshCookie(response)).toContain('Path=/api/auth');
 
-                const newRefreshCookie = cookies.find((c: string) => c.startsWith('refresh_token='))!;
-                expect(newRefreshCookie).toBeDefined();
-                expect(newRefreshCookie).not.toBe(loginCookie); // Should be rotated
-            });
+            const invalidPassword = await request(app.getHttpServer())
+                .post('/api/auth/login')
+                .send({ email: unique.email, password: 'wrong-password' })
+                .expect(401);
+            expectErrorResponse(invalidPassword, 401);
 
-            it('should reject refresh without cookie', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-                expect(response.body.error.message).toContain('Refresh token not found');
-            });
-
-            it('should reject refresh with invalid token', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', 'refresh_token=invalid_token')
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-            });
-
-            it('should prevent token reuse (token rotation)', async () => {
-                // Get a fresh token
-                const loginResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
-
-                const loginCookies = loginResponse.headers['set-cookie'] as unknown as string[];
-                const originalRefreshCookie = loginCookies.find((c: string) => c.startsWith('refresh_token='))!;
-
-                // Use the token once
-                const refreshResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', originalRefreshCookie)
-                    .expect(200);
-
-                // Try to reuse the old token - should fail
-                const reuseResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', originalRefreshCookie)
-                    .expect(401);
-
-                expectErrorResponse(reuseResponse, 401);
-            });
+            const unknownUser = await request(app.getHttpServer())
+                .post('/api/auth/login')
+                .send({
+                    email: getUniqueTestData('missing').email,
+                    password: 'password123',
+                })
+                .expect(404);
+            expectErrorResponse(unknownUser, 404);
         });
 
-        describe('GET /admin/auth/sessions', () => {
-            it('should return active sessions for authenticated user', async () => {
-                // Login to get a fresh token
-                const loginResp = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+        it('rejects invalid login payloads', async () => {
+            const response = await request(app.getHttpServer())
+                .post('/api/auth/login')
+                .send({ email: 'bad-email', password: '' })
+                .expect(400);
 
-                const adminToken = extractAuthTokenFromResponse(loginResp);
+            expectErrorResponse(response, 400);
+        });
+    });
 
-                const response = await request(app.getHttpServer())
-                    .get('/api/admin/auth/sessions')
-                    .set('Authorization', `Bearer ${adminToken}`)
-                    .expect(200);
+    describe('POST /api/auth/refresh-token', () => {
+        it('rotates refresh tokens and rejects old token reuse', async () => {
+            await seedAuthFixture();
+            const unique = getUniqueTestData('auth-refresh');
 
-                const data = expectSuccessResponse<any[]>(response, 200);
+            const registerResponse = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: unique.email,
+                    name: unique.name,
+                    password: 'password123',
+                })
+                .expect(201);
 
-                // Should have at least one active session
-                expect(Array.isArray(data)).toBe(true);
-                expect(data.length).toBeGreaterThan(0);
+            const originalCookie = getRefreshCookie(registerResponse);
 
-                // Verify session structure
-                const session = data[0];
-                expect(session).toHaveProperty('id');
-                expect(session).toHaveProperty('device');
-                expect(session).toHaveProperty('ip');
-                expect(session).toHaveProperty('createdAt');
-                expect(session).toHaveProperty('expiresAt');
-            });
+            const refreshResponse = await request(app.getHttpServer())
+                .post('/api/auth/refresh-token')
+                .set('Cookie', originalCookie)
+                .expect(200);
 
-            it('should reject unauthenticated request', async () => {
-                const response = await request(app.getHttpServer())
-                    .get('/api/admin/auth/sessions')
-                    .expect(401);
+            const refreshData = expectSuccessResponse<any>(
+                refreshResponse,
+                200,
+            );
+            expect(refreshData.accessToken).toEqual(expect.any(String));
 
-                expectErrorResponse(response, 401);
-            });
+            const rotatedCookie = getRefreshCookie(refreshResponse);
+            expect(rotatedCookie).not.toBe(originalCookie);
+
+            const reuseResponse = await request(app.getHttpServer())
+                .post('/api/auth/refresh-token')
+                .set('Cookie', originalCookie)
+                .expect(401);
+            expectErrorResponse(reuseResponse, 401);
         });
 
-        describe('POST /admin/auth/logout', () => {
-            it('should logout from current device and clear cookie', async () => {
-                // Clean up any existing tokens for isolation
-                const user = await prisma.user.findUnique({ where: { email: adminDto.email } });
-                if (user) {
-                    await prisma.refreshToken.deleteMany({ where: { userId: user.id } });
-                }
+        it('rejects missing and invalid refresh cookies', async () => {
+            const missingResponse = await request(app.getHttpServer())
+                .post('/api/auth/refresh-token')
+                .expect(401);
+            expectErrorResponse(missingResponse, 401);
 
-                // Login to get a fresh session
-                const loginResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+            const invalidResponse = await request(app.getHttpServer())
+                .post('/api/auth/refresh-token')
+                .set('Cookie', 'refresh_token=not-a-real-token')
+                .expect(401);
+            expectErrorResponse(invalidResponse, 401);
+        });
+    });
 
-                const loginCookies = loginResponse.headers['set-cookie'] as unknown as string[];
-                const logoutRefreshCookie = loginCookies.find((c: string) => c.startsWith('refresh_token='))!;
-                const logoutToken = extractAuthTokenFromResponse(loginResponse);
+    describe('POST /api/auth/logout', () => {
+        it('clears the refresh cookie for authenticated users', async () => {
+            await seedAuthFixture();
+            const unique = getUniqueTestData('auth-logout');
 
-                // Logout
-                const logoutResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/logout')
-                    .set('Authorization', `Bearer ${logoutToken}`)
-                    .set('Cookie', logoutRefreshCookie)
-                    .expect(200);
+            const registerResponse = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: unique.email,
+                    name: unique.name,
+                    password: 'password123',
+                })
+                .expect(201);
 
-                expectSuccessResponse(logoutResponse, 200);
-                expect(logoutResponse.body.data.message).toContain('Logged out');
+            const token = extractAuthTokenFromResponse(registerResponse);
 
-                // Verify cookie is cleared
-                const logoutCookies = logoutResponse.headers['set-cookie'] as unknown as string[];
-                expect(logoutCookies).toBeDefined();
+            const response = await request(app.getHttpServer())
+                .post('/api/auth/logout')
+                .set('Authorization', `Bearer ${token}`)
+                .expect(200);
 
-                const clearedCookie = logoutCookies.find((c: string) => c.startsWith('refresh_token='))!;
-                // Cookie can be cleared with either Max-Age=0 or Expires in past
-                expect(clearedCookie).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/);
-
-                // Try to use the token - should fail
-                const refreshResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', logoutRefreshCookie)
-                    .expect(401);
-
-                expectErrorResponse(refreshResponse, 401);
-            });
-
-            it('should reject logout without authentication', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/logout')
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-            });
+            const data = expectSuccessResponse<any>(response, 200);
+            expect(data.message).toBe('Logged out successfully');
+            expect(getRefreshCookie(response)).toMatch(
+                /Max-Age=0|Expires=Thu, 01 Jan 1970/,
+            );
         });
 
-        describe('POST /admin/auth/logout-all', () => {
-            it('should logout from all devices', async () => {
-                // Create multiple sessions by logging in from different "devices"
-                const login1 = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .set('User-Agent', 'Device1')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+        it('rejects unauthenticated logout', async () => {
+            const response = await request(app.getHttpServer())
+                .post('/api/auth/logout')
+                .expect(401);
 
-                const login2 = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .set('User-Agent', 'Device2')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+            expectErrorResponse(response, 401);
+        });
+    });
 
-                const token1 = extractAuthTokenFromResponse(login1);
-                const cookie1 = (login1.headers['set-cookie'] as unknown as string[]).find((c: string) => c.startsWith('refresh_token='))!;
-                const cookie2 = (login2.headers['set-cookie'] as unknown as string[]).find((c: string) => c.startsWith('refresh_token='))!;
+    describe('/api/auth/roles', () => {
+        it('enforces authentication and permissions', async () => {
+            const fixture = await seedAuthFixture();
 
-                // Verify we have multiple sessions
-                const sessionsResponse = await request(app.getHttpServer())
-                    .get('/api/admin/auth/sessions')
-                    .set('Authorization', `Bearer ${token1}`)
-                    .expect(200);
+            const unauthenticated = await request(app.getHttpServer())
+                .get('/api/auth/roles')
+                .expect(401);
+            expectErrorResponse(unauthenticated, 401);
 
-                const sessions = expectSuccessResponse<any[]>(sessionsResponse, 200);
-                expect(sessions.length).toBeGreaterThanOrEqual(2);
+            const customer = getUniqueTestData('auth-customer');
+            const customerRegister = await request(app.getHttpServer())
+                .post('/api/auth/register')
+                .send({
+                    email: customer.email,
+                    name: customer.name,
+                    password: 'password123',
+                })
+                .expect(201);
+            const customerToken =
+                extractAuthTokenFromResponse(customerRegister);
 
-                // Logout from all devices
-                const logoutAllResponse = await request(app.getHttpServer())
-                    .post('/api/admin/auth/logout-all')
-                    .set('Authorization', `Bearer ${token1}`)
-                    .expect(200);
+            const forbidden = await request(app.getHttpServer())
+                .get('/api/auth/roles')
+                .set('Authorization', `Bearer ${customerToken}`)
+                .expect(403);
+            expectErrorResponse(forbidden, 403);
 
-                expectSuccessResponse(logoutAllResponse, 200);
-                expect(logoutAllResponse.body.data.message).toContain('Logged out');
-
-                // Verify both tokens are revoked
-                await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', cookie1)
-                    .expect(401);
-
-                await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', cookie2)
-                    .expect(401);
-            });
-
-            it('should reject unauthenticated logout-all request', async () => {
-                const response = await request(app.getHttpServer())
-                    .post('/api/admin/auth/logout-all')
-                    .expect(401);
-
-                expectErrorResponse(response, 401);
-            });
+            const allowed = await request(app.getHttpServer())
+                .get('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .expect(200);
+            expectSuccessResponse<any[]>(allowed, 200);
         });
 
-        describe('Multi-device session management', () => {
-            it('should maintain separate sessions per device', async () => {
-                // Clean up any existing tokens for isolation
-                const user = await prisma.user.findUnique({ where: { email: adminDto.email } });
-                if (user) {
-                    await prisma.refreshToken.deleteMany({ where: { userId: user.id } });
-                }
+        it('creates, updates, lists, and deletes editable roles', async () => {
+            const fixture = await seedAuthFixture();
 
-                // Login from two devices
-                const device1Login = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .set('User-Agent', 'Chrome/Windows')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+            const createResponse = await request(app.getHttpServer())
+                .post('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({
+                    name: 'Support',
+                    permissions: ['roles.read'],
+                })
+                .expect(201);
 
-                const device2Login = await request(app.getHttpServer())
-                    .post('/api/admin/auth/login')
-                    .set('User-Agent', 'Safari/Mac')
-                    .send({ email: adminDto.email, password: adminDto.password })
-                    .expect(201);
+            const created = expectSuccessResponse<any>(createResponse, 201);
+            expect(created.name).toBe('support');
+            expect(created.permissions).toEqual(['roles.read']);
 
-                const token1 = extractAuthTokenFromResponse(device1Login);
-                const cookie1 = (device1Login.headers['set-cookie'] as unknown as string[]).find((c: string) => c.startsWith('refresh_token='))!;
-                const cookie2 = (device2Login.headers['set-cookie'] as unknown as string[]).find((c: string) => c.startsWith('refresh_token='))!;
+            const listResponse = await request(app.getHttpServer())
+                .get('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .expect(200);
 
-                expect(cookie1).toBeDefined();
-                expect(cookie2).toBeDefined();
+            const roles = expectSuccessResponse<any[]>(listResponse, 200);
+            expect(roles.some((role) => role.name === 'support')).toBe(true);
+            expect(roles.some((role) => role.name === 'admin')).toBe(false);
+            expect(roles.some((role) => role.name === 'customer')).toBe(false);
 
-                // Both should be able to refresh independently
-                const refresh1 = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', cookie1)
-                    .expect(200);
+            const updateResponse = await request(app.getHttpServer())
+                .patch(`/api/auth/roles/${created.id}/permissions`)
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ permissions: ['roles.read', 'roles.update'] })
+                .expect(200);
 
-                const refresh2 = await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', cookie2)
-                    .expect(200);
+            const updated = expectSuccessResponse<any>(updateResponse, 200);
+            expect(updated.permissions).toEqual(['roles.read', 'roles.update']);
 
-                // Get updated cookies after refresh (token rotation)
-                const newCookie1 = (refresh1.headers['set-cookie'] as unknown as string[]).find((c: string) => c.startsWith('refresh_token='))!;
-                const newCookie2 = (refresh2.headers['set-cookie'] as unknown as string[]).find((c: string) => c.startsWith('refresh_token='))!;
-                const newToken1 = extractAuthTokenFromResponse(refresh1);
+            await request(app.getHttpServer())
+                .delete(`/api/auth/roles/${created.id}`)
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .expect(204);
 
-                // Verify the cookies are different
-                expect(newCookie1).not.toBe(newCookie2);
+            await expect(
+                prisma.role.findUnique({ where: { id: created.id } }),
+            ).resolves.toBeNull();
+        });
 
-                // Verify we have exactly 2 active tokens in database
-                const tokens = await prisma.refreshToken.findMany({
-                    where: { userId: user!.id, isRevoked: false }
-                });
-                expect(tokens).toHaveLength(2);
+        it('rejects duplicate, protected, invalid, and missing role operations', async () => {
+            const fixture = await seedAuthFixture();
 
-                // Logout from device1 only
-                await request(app.getHttpServer())
-                    .post('/api/admin/auth/logout')
-                    .set('Authorization', `Bearer ${newToken1}`)
-                    .set('Cookie', newCookie1)
-                    .expect(200);
+            await request(app.getHttpServer())
+                .post('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ name: 'support', permissions: [] })
+                .expect(201);
 
-                // Verify only 1 token left in database
-                const tokensAfterLogout = await prisma.refreshToken.findMany({
-                    where: { userId: user!.id, isRevoked: false }
-                });
-                expect(tokensAfterLogout).toHaveLength(1);
+            const duplicate = await request(app.getHttpServer())
+                .post('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ name: 'support', permissions: [] })
+                .expect(409);
+            expectErrorResponse(duplicate, 409);
 
-                // Device1 should be logged out
-                await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', newCookie1)
-                    .expect(401);
+            const protectedRole = await request(app.getHttpServer())
+                .post('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ name: 'customer', permissions: [] })
+                .expect(403);
+            expectErrorResponse(protectedRole, 403);
 
-                // Device2 should still work
-                await request(app.getHttpServer())
-                    .post('/api/admin/auth/refresh-token')
-                    .set('Cookie', newCookie2)
-                    .expect(200);
-            });
+            const invalidPayload = await request(app.getHttpServer())
+                .post('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ name: 'bad-role', permissions: 'roles.read' })
+                .expect(400);
+            expectErrorResponse(invalidPayload, 400);
+
+            const missingPermission = await request(app.getHttpServer())
+                .post('/api/auth/roles')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ name: 'auditor', permissions: ['missing.permission'] })
+                .expect(404);
+            expectErrorResponse(missingPermission, 404);
+
+            const protectedUpdate = await request(app.getHttpServer())
+                .patch(`/api/auth/roles/${fixture.adminRoleId}/permissions`)
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .send({ permissions: ['roles.read'] })
+                .expect(403);
+            expectErrorResponse(protectedUpdate, 403);
+
+            const missingDelete = await request(app.getHttpServer())
+                .delete('/api/auth/roles/00000000-0000-0000-0000-000000000000')
+                .set('Authorization', `Bearer ${fixture.adminToken}`)
+                .expect(404);
+            expectErrorResponse(missingDelete, 404);
         });
     });
 });

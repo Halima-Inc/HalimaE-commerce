@@ -1,14 +1,24 @@
 import { INestApplication, LoggerService } from '@nestjs/common';
 import request from 'supertest';
-import { setupE2ETest, teardownE2ETest, getUniqueTestData } from './jest-e2e.setup';
+import {
+    setupE2ETest,
+    teardownE2ETest,
+    getUniqueTestData,
+} from './jest-e2e.setup';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { LogService } from '../src/logger/log.service';
-import { Status, ORDERSTATUS, PAYMENTSTATUS, FULFILLMENTSTATUS, PAYMENTMETHOD } from '@prisma/client';
-import { 
-    expectSuccessResponse, 
-    expectErrorResponse, 
-    extractAuthTokenFromResponse 
+import { LogService } from '../src/common/log.service';
+import {
+    Status,
+    ORDERSTATUS,
+    PAYMENTSTATUS,
+    FULFILLMENTSTATUS,
+    PAYMENTMETHOD,
+} from '@prisma/client';
+import {
+    expectSuccessResponse,
+    expectErrorResponse,
+    extractAuthTokenFromResponse,
 } from './test-utils';
 
 describe('OrderController (e2e)', () => {
@@ -27,30 +37,57 @@ describe('OrderController (e2e)', () => {
     let logger: LoggerService;
     let testData: any;
 
+    let customerRoleId: string;
+
+    async function createCustomerUser(prefix: string) {
+        const unique = getUniqueTestData(prefix);
+        const customer = await prisma.user.create({
+            data: {
+                name: unique.name,
+                email: unique.email,
+                passwordHash: await argon2.hash('password123'),
+                phone: '1234567890',
+                status: Status.ACTIVE,
+                roleId: customerRoleId,
+            },
+        });
+
+        const loginResponse = await request(app.getHttpServer())
+            .post('/api/auth/login')
+            .send({ email: unique.email, password: 'password123' })
+            .expect(200);
+
+        const token = extractAuthTokenFromResponse(loginResponse);
+
+        return {
+            id: customer.id,
+            token,
+            email: unique.email,
+            name: unique.name,
+        };
+    }
+
     beforeAll(async () => {
         ({ app, prisma } = await setupE2ETest());
         logger = app.get<LoggerService>(LogService);
 
+        // Seed customer role
+        let role = await prisma.role.findFirst({
+            where: { name: 'customer' },
+        });
+        if (!role) {
+            role = await prisma.role.create({
+                data: { name: 'customer' },
+            });
+        }
+        customerRoleId = role.id;
+
         testData = getUniqueTestData('order');
 
         // Create test customer
-        const customer = await prisma.customer.create({
-            data: {
-                name: testData.name,
-                email: testData.email,
-                passwordHash: await argon2.hash('password123'),
-                phone: '1234567890',
-                status: Status.ACTIVE,
-            },
-        });
+        const customer = await createCustomerUser('order');
         customerId = customer.id;
-
-        // Login customer
-        const customerLoginResponse = await request(app.getHttpServer())
-            .post('/api/customers/auth/login')
-            .send({ email: testData.email, password: 'password123' });
-
-        customerToken = extractAuthTokenFromResponse(customerLoginResponse);
+        customerToken = customer.token;
 
         // Create admin user
         const adminData = getUniqueTestData('admin');
@@ -71,7 +108,7 @@ describe('OrderController (e2e)', () => {
 
         // Login admin
         const adminLoginResponse = await request(app.getHttpServer())
-            .post('/api/admin/auth/login')
+            .post('/api/auth/login')
             .send({ email: adminData.email, password: 'admin123' });
 
         adminToken = extractAuthTokenFromResponse(adminLoginResponse);
@@ -79,7 +116,7 @@ describe('OrderController (e2e)', () => {
         // Create addresses for customer
         const billingAddress = await prisma.address.create({
             data: {
-                customerId: customerId,
+                userId: customerId,
                 firstName: 'John',
                 lastName: 'Doe',
                 phone: '1234567890',
@@ -93,7 +130,7 @@ describe('OrderController (e2e)', () => {
 
         const shippingAddress = await prisma.address.create({
             data: {
-                customerId: customerId,
+                userId: customerId,
                 firstName: 'John',
                 lastName: 'Doe',
                 phone: '1234567890',
@@ -146,8 +183,8 @@ describe('OrderController (e2e)', () => {
             data: {
                 variantId: variantId,
                 currency: 'EGP',
-                amount: 100.00,
-                compareAt: 150.00,
+                amount: 100.0,
+                compareAt: 150.0,
             },
         });
 
@@ -193,7 +230,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(201);
             const data = expectSuccessResponse<any>(response, 201);
-            
+
             expect(data).toHaveProperty('id');
             expect(data).toHaveProperty('orderNo');
             expect(data.customerId).toBe(customerId);
@@ -206,19 +243,25 @@ describe('OrderController (e2e)', () => {
             expect(Number(data.items[0].unitPrice)).toBe(100);
             expect(data.subtotal).toBe(200);
             expect(data.total).toBe(200);
-            
+
             // For cash on delivery, paymentUrl should be null
             expect(data.paymentUrl).toBeNull();
 
             // Verify billing address snapshot
             expect(data.billingAddress).toHaveProperty('firstName', 'John');
             expect(data.billingAddress).toHaveProperty('lastName', 'Doe');
-            expect(data.billingAddress).toHaveProperty('line1', '123 Billing St');
-            
+            expect(data.billingAddress).toHaveProperty(
+                'line1',
+                '123 Billing St',
+            );
+
             // Verify shipping address snapshot
             expect(data.shippingAddress).toHaveProperty('firstName', 'John');
             expect(data.shippingAddress).toHaveProperty('lastName', 'Doe');
-            expect(data.shippingAddress).toHaveProperty('line1', '456 Shipping Ave');
+            expect(data.shippingAddress).toHaveProperty(
+                'line1',
+                '456 Shipping Ave',
+            );
 
             orderId = data.id;
             orderNo = data.orderNo;
@@ -263,19 +306,11 @@ describe('OrderController (e2e)', () => {
 
         it('should return 400 if addresses do not belong to customer', async () => {
             // Create another customer with addresses
-            const otherCustomerData = getUniqueTestData('other-customer');
-            const otherCustomer = await prisma.customer.create({
-                data: {
-                    name: otherCustomerData.name,
-                    email: otherCustomerData.email,
-                    passwordHash: await argon2.hash('password123'),
-                    status: Status.ACTIVE,
-                },
-            });
+            const otherCustomer = await createCustomerUser('other-customer');
 
             const otherAddress = await prisma.address.create({
                 data: {
-                    customerId: otherCustomer.id,
+                    userId: otherCustomer.id,
                     firstName: 'Jane',
                     lastName: 'Smith',
                     phone: '5555555555',
@@ -340,7 +375,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data).toHaveProperty('orders');
             expect(data).toHaveProperty('meta');
             expect(Array.isArray(data.orders)).toBe(true);
@@ -351,8 +386,9 @@ describe('OrderController (e2e)', () => {
         });
 
         it('should return 401 if not authenticated', async () => {
-            const response = await request(app.getHttpServer())
-                .get('/api/orders/my-orders');
+            const response = await request(app.getHttpServer()).get(
+                '/api/orders/my-orders',
+            );
 
             expectErrorResponse(response, 401);
         });
@@ -366,7 +402,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.id).toBe(orderId);
             expect(data.orderNo).toBe(orderNo);
             expect(data.customerId).toBe(customerId);
@@ -377,29 +413,18 @@ describe('OrderController (e2e)', () => {
 
         it('should return 404 for non-existent order', async () => {
             const response = await request(app.getHttpServer())
-                .get('/api/orders/my-orders/00000000-0000-0000-0000-000000000000')
+                .get(
+                    '/api/orders/my-orders/00000000-0000-0000-0000-000000000000',
+                )
                 .set('Authorization', `Bearer ${customerToken}`);
 
             expectErrorResponse(response, 404);
         });
 
-        it('should return 404 if trying to access another customer\'s order', async () => {
+        it("should return 404 if trying to access another customer's order", async () => {
             // Create another customer
-            const otherCustomerData = getUniqueTestData('other-customer-2');
-            const otherCustomer = await prisma.customer.create({
-                data: {
-                    name: otherCustomerData.name,
-                    email: otherCustomerData.email,
-                    passwordHash: await argon2.hash('password123'),
-                    status: Status.ACTIVE,
-                },
-            });
-
-            const otherLoginResponse = await request(app.getHttpServer())
-                .post('/api/customers/auth/login')
-                .send({ email: otherCustomerData.email, password: 'password123' });
-
-            const otherToken = extractAuthTokenFromResponse(otherLoginResponse);
+            const otherCustomer = await createCustomerUser('other-customer-2');
+            const otherToken = otherCustomer.token;
 
             const response = await request(app.getHttpServer())
                 .get(`/api/orders/my-orders/${orderId}`)
@@ -417,7 +442,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.orderNo).toBe(orderNo);
             expect(data.customerId).toBe(customerId);
         });
@@ -476,7 +501,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.status).toBe(ORDERSTATUS.CANCELLED);
         });
 
@@ -501,7 +526,9 @@ describe('OrderController (e2e)', () => {
 
         it('should return 404 for non-existent order', async () => {
             const response = await request(app.getHttpServer())
-                .patch('/api/orders/my-orders/00000000-0000-0000-0000-000000000000/cancel')
+                .patch(
+                    '/api/orders/my-orders/00000000-0000-0000-0000-000000000000/cancel',
+                )
                 .set('Authorization', `Bearer ${customerToken}`);
 
             expectErrorResponse(response, 404);
@@ -516,30 +543,30 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data).toHaveProperty('orders');
             expect(data).toHaveProperty('meta');
             expect(Array.isArray(data.orders)).toBe(true);
             expect(data.orders.length).toBeGreaterThan(0);
             expect(data.orders[0]).toHaveProperty('id');
             expect(data.orders[0]).toHaveProperty('orderNo');
-            expect(data.orders[0]).toHaveProperty('customer');
-            expect(data.orders[0].customer).toHaveProperty('email');
+            expect(data.orders[0]).toHaveProperty('customerId');
         });
 
         it('should return 401 if not authenticated', async () => {
-            const response = await request(app.getHttpServer())
-                .get('/api/orders/admin/all');
+            const response = await request(app.getHttpServer()).get(
+                '/api/orders/admin/all',
+            );
 
             expectErrorResponse(response, 401);
         });
 
-        it('should return 401 if customer tries to access', async () => {
+        it('should return 403 if customer tries to access', async () => {
             const response = await request(app.getHttpServer())
                 .get('/api/orders/admin/all')
                 .set('Authorization', `Bearer ${customerToken}`);
 
-            expectErrorResponse(response, 401);
+            expectErrorResponse(response, 403);
         });
     });
 
@@ -552,9 +579,12 @@ describe('OrderController (e2e)', () => {
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
 
-            logger.debug?.(`Admin fetched order data: ${JSON.stringify(data)}`, 'OrderService TEST');
+            logger.debug?.(
+                `Admin fetched order data: ${JSON.stringify(data)}`,
+                'OrderService TEST',
+            );
             expect(data.id).toBe(orderId);
-            expect(data).toHaveProperty('customer');
+            expect(data).toHaveProperty('customerId');
         });
 
         it('should return 404 for non-existent order', async () => {
@@ -574,7 +604,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.orderNo).toBe(orderNo);
         });
 
@@ -596,7 +626,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.status).toBe(ORDERSTATUS.PROCESSING);
         });
 
@@ -608,7 +638,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.status).toBe(ORDERSTATUS.DELIVERED);
         });
 
@@ -623,20 +653,22 @@ describe('OrderController (e2e)', () => {
 
         it('should return 404 for non-existent order', async () => {
             const response = await request(app.getHttpServer())
-                .patch('/api/orders/admin/00000000-0000-0000-0000-000000000000/status')
+                .patch(
+                    '/api/orders/admin/00000000-0000-0000-0000-000000000000/status',
+                )
                 .set('Authorization', `Bearer ${adminToken}`)
                 .send({ status: ORDERSTATUS.PROCESSING });
 
             expectErrorResponse(response, 404);
         });
 
-        it('should return 401 if customer tries to access', async () => {
+        it('should return 403 if customer tries to access', async () => {
             const response = await request(app.getHttpServer())
                 .patch(`/api/orders/admin/${orderId}/status`)
                 .set('Authorization', `Bearer ${customerToken}`)
                 .send({ status: ORDERSTATUS.PROCESSING });
 
-            expectErrorResponse(response, 401);
+            expectErrorResponse(response, 403);
         });
     });
 
@@ -649,7 +681,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.paymentStatus).toBe(PAYMENTSTATUS.PAID);
         });
 
@@ -661,7 +693,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.paymentStatus).toBe(PAYMENTSTATUS.REFUNDED);
         });
 
@@ -676,7 +708,9 @@ describe('OrderController (e2e)', () => {
 
         it('should return 404 for non-existent order', async () => {
             const response = await request(app.getHttpServer())
-                .patch('/api/orders/admin/00000000-0000-0000-0000-000000000000/payment-status')
+                .patch(
+                    '/api/orders/admin/00000000-0000-0000-0000-000000000000/payment-status',
+                )
                 .set('Authorization', `Bearer ${adminToken}`)
                 .send({ paymentStatus: PAYMENTSTATUS.PAID });
 
@@ -693,7 +727,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.fulfillmentStatus).toBe(FULFILLMENTSTATUS.DELIVERED);
         });
 
@@ -705,7 +739,7 @@ describe('OrderController (e2e)', () => {
 
             expect(response.status).toBe(200);
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             expect(data.fulfillmentStatus).toBe(FULFILLMENTSTATUS.SHIPPED);
         });
 
@@ -720,7 +754,9 @@ describe('OrderController (e2e)', () => {
 
         it('should return 404 for non-existent order', async () => {
             const response = await request(app.getHttpServer())
-                .patch('/api/orders/admin/00000000-0000-0000-0000-000000000000/fulfillment-status')
+                .patch(
+                    '/api/orders/admin/00000000-0000-0000-0000-000000000000/fulfillment-status',
+                )
                 .set('Authorization', `Bearer ${adminToken}`)
                 .send({ fulfillmentStatus: FULFILLMENTSTATUS.DELIVERED });
 
@@ -788,7 +824,10 @@ describe('OrderController (e2e)', () => {
                 .set('Authorization', `Bearer ${adminToken}`)
                 .send({ status: ORDERSTATUS.PROCESSING });
 
-            const processingOrder = expectSuccessResponse<any>(processingResponse, 200);
+            const processingOrder = expectSuccessResponse<any>(
+                processingResponse,
+                200,
+            );
             expect(processingOrder.status).toBe(ORDERSTATUS.PROCESSING);
 
             // 4. Payment is marked as PAID
@@ -806,8 +845,13 @@ describe('OrderController (e2e)', () => {
                 .set('Authorization', `Bearer ${adminToken}`)
                 .send({ fulfillmentStatus: FULFILLMENTSTATUS.SHIPPED });
 
-            const shippedOrder = expectSuccessResponse<any>(shippedResponse, 200);
-            expect(shippedOrder.fulfillmentStatus).toBe(FULFILLMENTSTATUS.SHIPPED);
+            const shippedOrder = expectSuccessResponse<any>(
+                shippedResponse,
+                200,
+            );
+            expect(shippedOrder.fulfillmentStatus).toBe(
+                FULFILLMENTSTATUS.SHIPPED,
+            );
 
             // 6. Order is marked as DELIVERED (final fulfillment status)
             const deliveredResponse = await request(app.getHttpServer())
@@ -815,8 +859,13 @@ describe('OrderController (e2e)', () => {
                 .set('Authorization', `Bearer ${adminToken}`)
                 .send({ fulfillmentStatus: FULFILLMENTSTATUS.DELIVERED });
 
-            const deliveredOrder = expectSuccessResponse<any>(deliveredResponse, 200);
-            expect(deliveredOrder.fulfillmentStatus).toBe(FULFILLMENTSTATUS.DELIVERED);
+            const deliveredOrder = expectSuccessResponse<any>(
+                deliveredResponse,
+                200,
+            );
+            expect(deliveredOrder.fulfillmentStatus).toBe(
+                FULFILLMENTSTATUS.DELIVERED,
+            );
 
             // 7. Verify order status was automatically updated to DELIVERED
             // (Order status is automatically updated when fulfillment status is set to DELIVERED)
@@ -824,7 +873,10 @@ describe('OrderController (e2e)', () => {
                 .get(`/api/orders/admin/${order.id}`)
                 .set('Authorization', `Bearer ${adminToken}`);
 
-            const verifiedOrder = expectSuccessResponse<any>(verifyResponse, 200);
+            const verifiedOrder = expectSuccessResponse<any>(
+                verifyResponse,
+                200,
+            );
             expect(verifiedOrder.status).toBe(ORDERSTATUS.DELIVERED);
 
             // 8. Customer retrieves delivered order
@@ -832,10 +884,15 @@ describe('OrderController (e2e)', () => {
                 .get(`/api/orders/my-orders/${order.id}`)
                 .set('Authorization', `Bearer ${customerToken}`);
 
-            const customerOrder = expectSuccessResponse<any>(customerOrderResponse, 200);
+            const customerOrder = expectSuccessResponse<any>(
+                customerOrderResponse,
+                200,
+            );
             expect(customerOrder.status).toBe(ORDERSTATUS.DELIVERED);
             expect(customerOrder.paymentStatus).toBe(PAYMENTSTATUS.PAID);
-            expect(customerOrder.fulfillmentStatus).toBe(FULFILLMENTSTATUS.DELIVERED);
+            expect(customerOrder.fulfillmentStatus).toBe(
+                FULFILLMENTSTATUS.DELIVERED,
+            );
         });
 
         it('should handle order cancellation and inventory restoration', async () => {
@@ -883,10 +940,13 @@ describe('OrderController (e2e)', () => {
             const order = expectSuccessResponse<any>(createResponse, 201);
 
             // Verify inventory decreased
-            const inventoryAfterOrder = await prisma.variantInventory.findUnique({
-                where: { variantId: variantId },
-            });
-            expect(inventoryAfterOrder?.stockOnHand).toBe(inventoryBefore!.stockOnHand - 10);
+            const inventoryAfterOrder =
+                await prisma.variantInventory.findUnique({
+                    where: { variantId: variantId },
+                });
+            expect(inventoryAfterOrder?.stockOnHand).toBe(
+                inventoryBefore!.stockOnHand - 10,
+            );
 
             // Cancel order
             const cancelResponse = await request(app.getHttpServer())
@@ -896,10 +956,13 @@ describe('OrderController (e2e)', () => {
             expectSuccessResponse<any>(cancelResponse, 200);
 
             // Verify inventory restored
-            const inventoryAfterCancel = await prisma.variantInventory.findUnique({
-                where: { variantId: variantId },
-            });
-            expect(inventoryAfterCancel?.stockOnHand).toBe(inventoryBefore!.stockOnHand);
+            const inventoryAfterCancel =
+                await prisma.variantInventory.findUnique({
+                    where: { variantId: variantId },
+                });
+            expect(inventoryAfterCancel?.stockOnHand).toBe(
+                inventoryBefore!.stockOnHand,
+            );
         });
 
         it('should prevent order creation with insufficient inventory', async () => {
@@ -953,9 +1016,7 @@ describe('OrderController (e2e)', () => {
             const endpoints = [
                 { method: 'get', url: '/api/orders/admin/all' },
                 { method: 'get', url: `/api/orders/admin/${orderId}` },
-                { method: 'patch', url: `/api/orders/admin/${orderId}/status` },
-                { method: 'patch', url: `/api/orders/admin/${orderId}/payment-status` },
-                { method: 'patch', url: `/api/orders/admin/${orderId}/fulfillment-status` },
+                { method: 'get', url: `/api/orders/admin/number/${orderNo}` },
             ];
 
             for (const endpoint of endpoints) {
@@ -964,29 +1025,46 @@ describe('OrderController (e2e)', () => {
                     .set('Authorization', `Bearer ${customerToken}`)
                     .send({ status: ORDERSTATUS.PROCESSING });
 
-                expectErrorResponse(response, 401);
+                expectErrorResponse(response, 403);
             }
         });
 
-        it('should not allow admin to use customer endpoints', async () => {
+        it('should allow admin to use customer endpoints (checking their own orders)', async () => {
             const response = await request(app.getHttpServer())
                 .get('/api/orders/my-orders')
                 .set('Authorization', `Bearer ${adminToken}`);
 
-            expectErrorResponse(response, 401);
+            expect(response.status).toBe(200);
         });
 
         it('should not allow unauthenticated access to any order endpoint', async () => {
             const endpoints = [
-                { method: 'post', url: '/api/orders/checkout', expectedStatus: 401 },
-                { method: 'get', url: '/api/orders/my-orders', expectedStatus: 401 },
-                { method: 'get', url: `/api/orders/my-orders/${orderId}`, expectedStatus: 401 },
-                { method: 'get', url: '/api/orders/admin/all', expectedStatus: 401 },
+                {
+                    method: 'post',
+                    url: '/api/orders/checkout',
+                    expectedStatus: 401,
+                },
+                {
+                    method: 'get',
+                    url: '/api/orders/my-orders',
+                    expectedStatus: 401,
+                },
+                {
+                    method: 'get',
+                    url: `/api/orders/my-orders/${orderId}`,
+                    expectedStatus: 401,
+                },
+                {
+                    method: 'get',
+                    url: '/api/orders/admin/all',
+                    expectedStatus: 401,
+                },
             ];
 
             for (const endpoint of endpoints) {
-                const response = await (request(app.getHttpServer()) as any)
-                    [endpoint.method](endpoint.url);
+                const response = await (request(app.getHttpServer()) as any)[
+                    endpoint.method
+                ](endpoint.url);
 
                 expectErrorResponse(response, endpoint.expectedStatus);
             }

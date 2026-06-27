@@ -1,15 +1,21 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { setupE2ETest, teardownE2ETest, getUniqueTestData } from './jest-e2e.setup';
+import {
+    setupE2ETest,
+    teardownE2ETest,
+    getUniqueTestData,
+} from './jest-e2e.setup';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { PAYMENTMETHOD, PAYMENTSTATUS, Status } from '@prisma/client';
-import { 
-    expectSuccessResponse, 
-    expectErrorResponse, 
-    extractAuthTokenFromResponse 
+import {
+    expectSuccessResponse,
+    expectErrorResponse,
+    extractAuthTokenFromResponse,
 } from './test-utils';
 import * as crypto from 'crypto';
+import { OutboxDispatcherScheduler } from '../src/payment/infrastructure/schedulers/outbox-dispatcher.scheduler';
+import { OrderOutboxDispatcherScheduler } from '../src/order/infrastructure/schedulers/order-outbox-dispatcher.scheduler';
 
 describe('PaymentController (e2e)', () => {
     let app: INestApplication;
@@ -20,8 +26,27 @@ describe('PaymentController (e2e)', () => {
     let orderId: string;
     let testData: any;
 
+    async function dispatchOutboxEvents() {
+        try {
+            const paymentDispatcher = app.get(OutboxDispatcherScheduler);
+            await paymentDispatcher.dispatchPendingEvents();
+        } catch (e) {
+            console.error('Error dispatching payment outbox events:', e);
+        }
+
+        try {
+            const orderDispatcher = app.get(OrderOutboxDispatcherScheduler);
+            await orderDispatcher.dispatchPendingEvents();
+        } catch (e) {
+            console.error('Error dispatching order outbox events:', e);
+        }
+    }
+
     // Mock Paymob webhook payload
-    const createMockPaymobWebhook = (orderId: string, success: boolean = true) => ({
+    const createMockPaymobWebhook = (
+        orderId: string,
+        success: boolean = true,
+    ) => ({
         obj: {
             id: Math.floor(Math.random() * 1000000),
             pending: false,
@@ -63,30 +88,47 @@ describe('PaymentController (e2e)', () => {
         ({ app, prisma } = await setupE2ETest());
         testData = getUniqueTestData('payment');
 
+        // Find or create customer role
+        let role = await prisma.role.findFirst({
+            where: { name: 'customer' },
+        });
+        if (!role) {
+            role = await prisma.role.create({
+                data: { name: 'customer' },
+            });
+        }
+        const customerRoleId = role.id;
+
         // Create test customer
-        const customer = await prisma.customer.create({
+        const customer = await prisma.user.create({
             data: {
                 name: testData.name,
                 email: testData.email,
                 passwordHash: await argon2.hash('password123'),
                 phone: '1234567890',
                 status: Status.ACTIVE,
+                roleId: customerRoleId,
             },
         });
         customerId = customer.id;
 
         // Login customer
         const customerLoginResponse = await request(app.getHttpServer())
-            .post('/api/customers/auth/login')
+            .post('/api/auth/login')
             .send({ email: testData.email, password: 'password123' });
 
         customerToken = extractAuthTokenFromResponse(customerLoginResponse);
 
         // Create admin user
         const adminData = getUniqueTestData('admin');
-        const adminRole = await prisma.role.create({
-            data: { name: 'admin' },
+        let adminRole = await prisma.role.findFirst({
+            where: { name: 'admin' },
         });
+        if (!adminRole) {
+            adminRole = await prisma.role.create({
+                data: { name: 'admin' },
+            });
+        }
 
         await prisma.user.create({
             data: {
@@ -99,7 +141,7 @@ describe('PaymentController (e2e)', () => {
 
         // Login admin
         const adminLoginResponse = await request(app.getHttpServer())
-            .post('/api/admin/auth/login')
+            .post('/api/auth/login')
             .send({ email: adminData.email, password: 'admin123' });
 
         adminToken = extractAuthTokenFromResponse(adminLoginResponse);
@@ -139,7 +181,7 @@ describe('PaymentController (e2e)', () => {
             data: {
                 variantId: variant.id,
                 currency: 'EGP',
-                amount: 100.00,
+                amount: 100.0,
             },
         });
 
@@ -153,7 +195,7 @@ describe('PaymentController (e2e)', () => {
         // Create addresses
         const billingAddress = await prisma.address.create({
             data: {
-                customerId,
+                userId: customerId,
                 firstName: 'John',
                 lastName: 'Doe',
                 phone: '1234567890',
@@ -166,7 +208,7 @@ describe('PaymentController (e2e)', () => {
 
         const shippingAddress = await prisma.address.create({
             data: {
-                customerId,
+                userId: customerId,
                 firstName: 'John',
                 lastName: 'Doe',
                 phone: '1234567890',
@@ -212,8 +254,8 @@ describe('PaymentController (e2e)', () => {
         it('should process successful card payment webhook', async () => {
             const webhookPayload = createMockPaymobWebhook(orderId, true);
             const signature = generateWebhookSignature(
-                webhookPayload, 
-                process.env.PAYMOB_API_KEY || 'test-key'
+                webhookPayload,
+                process.env.PAYMOB_API_KEY || 'test-key',
             );
 
             const response = await request(app.getHttpServer())
@@ -236,6 +278,7 @@ describe('PaymentController (e2e)', () => {
             expect(Number(payment?.amount)).toBe(200);
 
             // Verify order payment status was updated
+            await dispatchOutboxEvents();
             const order = await prisma.order.findUnique({
                 where: { id: orderId },
             });
@@ -246,9 +289,11 @@ describe('PaymentController (e2e)', () => {
         it('should process failed payment webhook', async () => {
             // Reset inventory
             await resetInventory();
-            
+
             // Create another order for failed payment test
-            await prisma.cartItem.deleteMany({ where: { cart: { customerId } } });
+            await prisma.cartItem.deleteMany({
+                where: { cart: { customerId } },
+            });
             await prisma.cart.deleteMany({ where: { customerId } });
 
             const cart = await prisma.cart.create({
@@ -265,10 +310,10 @@ describe('PaymentController (e2e)', () => {
             });
 
             const billingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
             });
             const shippingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
                 skip: 1,
             });
 
@@ -285,10 +330,13 @@ describe('PaymentController (e2e)', () => {
             const failedOrder = expectSuccessResponse<any>(orderResponse, 201);
             const failedOrderId = failedOrder.id;
 
-            const webhookPayload = createMockPaymobWebhook(failedOrderId, false);
+            const webhookPayload = createMockPaymobWebhook(
+                failedOrderId,
+                false,
+            );
             const signature = generateWebhookSignature(
-                webhookPayload, 
-                process.env.PAYMOB_API_KEY || 'test-key'
+                webhookPayload,
+                process.env.PAYMOB_API_KEY || 'test-key',
             );
 
             const response = await request(app.getHttpServer())
@@ -310,8 +358,8 @@ describe('PaymentController (e2e)', () => {
         it('should prevent duplicate webhook processing (idempotency)', async () => {
             const webhookPayload = createMockPaymobWebhook(orderId, true);
             const signature = generateWebhookSignature(
-                webhookPayload, 
-                process.env.PAYMOB_API_KEY || 'test-key'
+                webhookPayload,
+                process.env.PAYMOB_API_KEY || 'test-key',
             );
 
             // First webhook
@@ -360,9 +408,11 @@ describe('PaymentController (e2e)', () => {
         it('should handle wallet payment webhook', async () => {
             // Reset inventory
             await resetInventory();
-            
+
             // Create order for wallet payment
-            await prisma.cartItem.deleteMany({ where: { cart: { customerId } } });
+            await prisma.cartItem.deleteMany({
+                where: { cart: { customerId } },
+            });
             await prisma.cart.deleteMany({ where: { customerId } });
 
             const cart = await prisma.cart.create({
@@ -379,10 +429,10 @@ describe('PaymentController (e2e)', () => {
             });
 
             const billingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
             });
             const shippingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
                 skip: 1,
             });
 
@@ -410,8 +460,8 @@ describe('PaymentController (e2e)', () => {
             };
 
             const signature = generateWebhookSignature(
-                webhookPayload, 
-                process.env.PAYMOB_API_KEY || 'test-key'
+                webhookPayload,
+                process.env.PAYMOB_API_KEY || 'test-key',
             );
 
             const response = await request(app.getHttpServer())
@@ -438,9 +488,11 @@ describe('PaymentController (e2e)', () => {
         beforeAll(async () => {
             // Reset inventory
             await resetInventory();
-            
+
             // Create cash on delivery order
-            await prisma.cartItem.deleteMany({ where: { cart: { customerId } } });
+            await prisma.cartItem.deleteMany({
+                where: { cart: { customerId } },
+            });
             await prisma.cart.deleteMany({ where: { customerId } });
 
             const cart = await prisma.cart.create({
@@ -457,10 +509,10 @@ describe('PaymentController (e2e)', () => {
             });
 
             const billingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
             });
             const shippingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
                 skip: 1,
             });
 
@@ -489,11 +541,14 @@ describe('PaymentController (e2e)', () => {
 
             expect(response.status).toBe(200);
             expect(response.body).toHaveProperty('success', true);
-            expect(response.body).toHaveProperty('message', 'Cash payment recorded successfully');
+            expect(response.body).toHaveProperty(
+                'message',
+                'Cash payment recorded successfully',
+            );
 
             // Verify cash payment was recorded
             const payment = await prisma.payment.findFirst({
-                where: { 
+                where: {
                     orderId: cashOrderId,
                     method: PAYMENTMETHOD.CASH_ON_DELIVERY,
                 },
@@ -504,6 +559,7 @@ describe('PaymentController (e2e)', () => {
             expect(Number(payment?.amount)).toBe(100);
 
             // Verify order payment status was updated
+            await dispatchOutboxEvents();
             const order = await prisma.order.findUnique({
                 where: { id: cashOrderId },
             });
@@ -563,9 +619,11 @@ describe('PaymentController (e2e)', () => {
         it('should create order with card payment and return payment URL', async () => {
             // Reset inventory
             await resetInventory();
-            
+
             // Clean cart
-            await prisma.cartItem.deleteMany({ where: { cart: { customerId } } });
+            await prisma.cartItem.deleteMany({
+                where: { cart: { customerId } },
+            });
             await prisma.cart.deleteMany({ where: { customerId } });
 
             const cart = await prisma.cart.create({
@@ -582,10 +640,10 @@ describe('PaymentController (e2e)', () => {
             });
 
             const billingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
             });
             const shippingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
                 skip: 1,
             });
 
@@ -610,9 +668,11 @@ describe('PaymentController (e2e)', () => {
         it('should create order with wallet payment and return payment URL', async () => {
             // Reset inventory
             await resetInventory();
-            
+
             // Clean cart
-            await prisma.cartItem.deleteMany({ where: { cart: { customerId } } });
+            await prisma.cartItem.deleteMany({
+                where: { cart: { customerId } },
+            });
             await prisma.cart.deleteMany({ where: { customerId } });
 
             const cart = await prisma.cart.create({
@@ -629,10 +689,10 @@ describe('PaymentController (e2e)', () => {
             });
 
             const billingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
             });
             const shippingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
                 skip: 1,
             });
 
@@ -656,9 +716,11 @@ describe('PaymentController (e2e)', () => {
         it('should create order with cash on delivery and return null payment URL', async () => {
             // Reset inventory
             await resetInventory();
-            
+
             // Clean cart
-            await prisma.cartItem.deleteMany({ where: { cart: { customerId } } });
+            await prisma.cartItem.deleteMany({
+                where: { cart: { customerId } },
+            });
             await prisma.cart.deleteMany({ where: { customerId } });
 
             const cart = await prisma.cart.create({
@@ -675,10 +737,10 @@ describe('PaymentController (e2e)', () => {
             });
 
             const billingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
             });
             const shippingAddress = await prisma.address.findFirst({
-                where: { customerId },
+                where: { userId: customerId },
                 skip: 1,
             });
 
@@ -699,4 +761,3 @@ describe('PaymentController (e2e)', () => {
         });
     });
 });
-

@@ -1,14 +1,18 @@
 import { INestApplication, LoggerService } from '@nestjs/common';
 import request from 'supertest';
-import { setupE2ETest, teardownE2ETest, getUniqueTestData } from './jest-e2e.setup';
+import {
+    setupE2ETest,
+    teardownE2ETest,
+    getUniqueTestData,
+} from './jest-e2e.setup';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { LogService } from '../src/logger/log.service';
+import { LogService } from '../src/common/log.service';
 import { Status } from '@prisma/client';
-import { 
-    expectSuccessResponse, 
-    expectErrorResponse, 
-    extractAuthTokenFromResponse 
+import {
+    expectSuccessResponse,
+    expectErrorResponse,
+    extractAuthTokenFromResponse,
 } from './test-utils';
 
 describe('CartController (e2e)', () => {
@@ -25,31 +29,57 @@ describe('CartController (e2e)', () => {
     let categoryData: any;
     let productData: any;
     let variantData: any;
+    let customerRoleId: string;
+
+    async function createCustomerUser(prefix: string) {
+        const unique = getUniqueTestData(prefix);
+        const customer = await prisma.user.create({
+            data: {
+                name: unique.name,
+                email: unique.email,
+                passwordHash: await argon2.hash('password'),
+                phone: '1234567890',
+                status: Status.ACTIVE,
+                roleId: customerRoleId,
+            },
+        });
+
+        const loginResponse = await request(app.getHttpServer())
+            .post('/api/auth/login')
+            .send({ email: unique.email, password: 'password' })
+            .expect(200);
+
+        const token = extractAuthTokenFromResponse(loginResponse);
+
+        return {
+            id: customer.id,
+            token,
+            email: unique.email,
+            name: unique.name,
+        };
+    }
 
     beforeAll(async () => {
         ({ app, prisma } = await setupE2ETest());
         logger = app.get<LoggerService>(LogService);
 
+        // Seed customer role
+        let role = await prisma.role.findFirst({
+            where: { name: 'customer' },
+        });
+        if (!role) {
+            role = await prisma.role.create({
+                data: { name: 'customer' },
+            });
+        }
+        customerRoleId = role.id;
+
         testData = getUniqueTestData('cart');
 
         // Create test customer
-        const customer = await prisma.customer.create({
-            data: {
-                name: testData.name,
-                email: testData.email,
-                passwordHash: await argon2.hash('password'),
-                phone: '1234567890',
-                status: Status.ACTIVE,
-            },
-        });
+        const customer = await createCustomerUser('cart');
         customerId = customer.id;
-
-        // Login customer to get token
-        const loginResponse = await request(app.getHttpServer())
-            .post('/api/customers/auth/login')
-            .send({ email: testData.email, password: 'password' });
-
-        customerToken = extractAuthTokenFromResponse(loginResponse);
+        customerToken = customer.token;
 
         // Create test category
         categoryData = getUniqueTestData('category');
@@ -201,7 +231,10 @@ describe('CartController (e2e)', () => {
             expect(item.variant).toHaveProperty('sku', variantData.sku);
             expect(item.variant).toHaveProperty('size', 'M');
             expect(item.variant).toHaveProperty('color', 'Blue');
-            expect(item.variant.product).toHaveProperty('name', productData.name);
+            expect(item.variant.product).toHaveProperty(
+                'name',
+                productData.name,
+            );
             expect(item.variant.prices).toHaveLength(1);
             expect(item.variant.prices[0]).toHaveProperty('amount');
             expect(item.variant.prices[0]).toHaveProperty('currency', 'EGP');
@@ -209,21 +242,8 @@ describe('CartController (e2e)', () => {
 
         it('should return 404 if customer has no cart', async () => {
             // Create another customer
-            const noCartData = getUniqueTestData('nocart');
-            const newCustomer = await prisma.customer.create({
-                data: {
-                    name: noCartData.name,
-                    email: noCartData.email,
-                    passwordHash: await argon2.hash('password'),
-                    status: Status.ACTIVE,
-                },
-            });
-
-            const loginResponse = await request(app.getHttpServer())
-                .post('/api/customers/auth/login')
-                .send({ email: noCartData.email, password: 'password' });
-
-            const newCustomerToken = extractAuthTokenFromResponse(loginResponse);
+            const newCustomer = await createCustomerUser('nocart');
+            const newCustomerToken = newCustomer.token;
 
             const response = await request(app.getHttpServer())
                 .get('/api/cart')
@@ -234,8 +254,9 @@ describe('CartController (e2e)', () => {
         });
 
         it('should return 401 if not authenticated', async () => {
-            const response = await request(app.getHttpServer())
-                .get('/api/cart');
+            const response = await request(app.getHttpServer()).get(
+                '/api/cart',
+            );
 
             expectErrorResponse(response, 401);
         });
@@ -256,7 +277,10 @@ describe('CartController (e2e)', () => {
             const item = data.items[0];
             expect(item.variant).toHaveProperty('id', variantId);
             expect(item.variant).toHaveProperty('sku', variantData.sku);
-            expect(item.variant.product).toHaveProperty('name', productData.name);
+            expect(item.variant.product).toHaveProperty(
+                'name',
+                productData.name,
+            );
             expect(item.variant.prices).toHaveLength(1);
 
             // Should not have images, detailed product info, etc.
@@ -377,7 +401,10 @@ describe('CartController (e2e)', () => {
                 .get('/api/cart')
                 .set('Authorization', `Bearer ${customerToken}`);
 
-            const updatedCartData = expectSuccessResponse<any>(updatedCartResponse, 200);
+            const updatedCartData = expectSuccessResponse<any>(
+                updatedCartResponse,
+                200,
+            );
             expect(updatedCartData.items).toHaveLength(0);
         });
 
@@ -418,21 +445,8 @@ describe('CartController (e2e)', () => {
 
         it('should return 404 for non-existent cart', async () => {
             // Create another customer without cart
-            const emptyCartData = getUniqueTestData('emptycart');
-            const newCustomer = await prisma.customer.create({
-                data: {
-                    name: emptyCartData.name,
-                    email: emptyCartData.email,
-                    passwordHash: await argon2.hash('password'),
-                    status: Status.ACTIVE,
-                },
-            });
-
-            const loginResponse = await request(app.getHttpServer())
-                .post('/api/customers/auth/login')
-                .send({ email: emptyCartData.email, password: 'password' });
-
-            const newCustomerToken = extractAuthTokenFromResponse(loginResponse);
+            const newCustomer = await createCustomerUser('emptycart');
+            const newCustomerToken = newCustomer.token;
 
             const response = await request(app.getHttpServer())
                 .delete('/api/cart')
@@ -517,14 +531,16 @@ describe('CartController (e2e)', () => {
                     .send({
                         variantId: variantId,
                         qty: 1,
-                    })
+                    }),
             );
 
             const results = await Promise.all(promises);
-            
+
             // With concurrent requests, some may succeed and some may fail due to race conditions
             // At least one should succeed
-            const successResults = results.filter(result => result.status === 201);
+            const successResults = results.filter(
+                (result) => result.status === 201,
+            );
             expect(successResults.length).toBeGreaterThanOrEqual(1);
 
             const response = await request(app.getHttpServer())
@@ -532,10 +548,13 @@ describe('CartController (e2e)', () => {
                 .set('Authorization', `Bearer ${customerToken}`);
 
             const data = expectSuccessResponse<any>(response, 200);
-            
+
             // The cart should have items from successful requests
             // Total quantity should be at least 1 (from successful requests)
-            const totalQuantity = data.items.reduce((sum: number, item: any) => sum + item.qty, 0);
+            const totalQuantity = data.items.reduce(
+                (sum: number, item: any) => sum + item.qty,
+                0,
+            );
             expect(totalQuantity).toBeGreaterThanOrEqual(1);
             expect(data.totalItems).toBeGreaterThanOrEqual(1);
         });
@@ -705,7 +724,9 @@ describe('CartController (e2e)', () => {
                 expect(response.status).toBe(400);
                 const error = expectErrorResponse(response, 400);
                 // DTO validation returns message as array: ["qty must not be less than 0"]
-                const message = Array.isArray(error.message) ? error.message.join(', ') : error.message;
+                const message = Array.isArray(error.message)
+                    ? error.message.join(', ')
+                    : error.message;
                 expect(message).toContain('must not be less than 0');
             });
 
@@ -752,7 +773,9 @@ describe('CartController (e2e)', () => {
                     .set('Authorization', `Bearer ${customerToken}`);
 
                 const cartData = expectSuccessResponse<any>(cartResponse, 200);
-                const removedItem = cartData.items.find((item: any) => item.id === lowStockCartItemId);
+                const removedItem = cartData.items.find(
+                    (item: any) => item.id === lowStockCartItemId,
+                );
                 expect(removedItem).toBeUndefined();
             });
         });
@@ -787,11 +810,13 @@ describe('CartController (e2e)', () => {
 
                 // Manually insert cart item (bypassing service validation)
                 const cart = await prisma.cart.findFirst({
-                    where: { customerId }
+                    where: { customerId },
                 });
 
                 // Ensure cart exists for the customer; create one if missing so cartId is always a string
-                const cartId = cart ? cart.id : (await prisma.cart.create({ data: { customerId } })).id;
+                const cartId = cart
+                    ? cart.id
+                    : (await prisma.cart.create({ data: { customerId } })).id;
 
                 const cartItem = await prisma.cartItem.create({
                     data: {
@@ -865,13 +890,13 @@ describe('CartController (e2e)', () => {
             afterAll(async () => {
                 // Cleanup: Remove the problematic cart item
                 await prisma.cartItem.deleteMany({
-                    where: { variantId: noInventoryVariantId }
+                    where: { variantId: noInventoryVariantId },
                 });
                 await prisma.variantPrice.deleteMany({
-                    where: { variantId: noInventoryVariantId }
+                    where: { variantId: noInventoryVariantId },
                 });
                 await prisma.productVariant.deleteMany({
-                    where: { id: noInventoryVariantId }
+                    where: { id: noInventoryVariantId },
                 });
             });
         });

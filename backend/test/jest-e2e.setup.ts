@@ -1,18 +1,101 @@
-import "dotenv/config";
+import 'dotenv/config';
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe, LoggerService } from '@nestjs/common';
-import { ServeStaticModule } from '@nestjs/serve-static';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import {
+    INestApplication,
+    ValidationPipe,
+    LoggerService,
+} from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { join } from 'path';
-import { ThrottlerGuard } from '@nestjs/throttler';
-import { LogService } from '../src/logger/log.service';
+import { join, dirname } from 'path';
+import * as fs from 'fs';
+import { LogService } from '../src/common/log.service';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { Reflector } from '@nestjs/core';
-import { ResponseInterceptor } from '../common/interceptors/response.interceptor';
-import { GlobalExceptionFilter } from '../common/filters/global-exception.filter';
+import { GlobalExceptionFilter } from '../src/common/filters/global-exception.filter';
 import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
+import { CacheService } from '../src/common/cache.service';
+import { STORAGE_SERVICE } from '../src/product/product.tokens';
+
+process.env.NODE_ENV = 'development';
+
+class MockStorageService {
+    async createSignedUploadUrl(input: any) {
+        return {
+            uploadUrl: `http://localhost:9000/upload/${input.key}`,
+            expiresIn: 3600,
+            key: input.key,
+        };
+    }
+    async deleteObject(key: string): Promise<void> {
+        return;
+    }
+    buildPublicUrl(key: string): string {
+        const normalized = key.replace(/^\/+/, '');
+        const targetPath = join(
+            __dirname,
+            '..',
+            'public',
+            'uploads',
+            normalized,
+        );
+        const dir = dirname(targetPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        const base64Image =
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+        fs.writeFileSync(targetPath, Buffer.from(base64Image, 'base64'));
+
+        return `/images/${normalized}`;
+    }
+}
+
+class InMemoryCacheService {
+    private readonly values = new Map<string, string>();
+    private readonly sets = new Map<string, Set<string>>();
+
+    async set(key: string, val: any) {
+        this.values.set(key, JSON.stringify(val));
+    }
+
+    async get<T>(key: string): Promise<T | null> {
+        const val = this.values.get(key);
+        return val ? (JSON.parse(val) as T) : null;
+    }
+
+    async getMany<T>(keys: string[]): Promise<Array<T | null>> {
+        return Promise.all(keys.map((key) => this.get<T>(key)));
+    }
+
+    async del(key: string) {
+        this.values.delete(key);
+    }
+
+    async addToSet(key: string, member: string): Promise<void> {
+        const set = this.sets.get(key) ?? new Set<string>();
+        set.add(member);
+        this.sets.set(key, set);
+    }
+
+    async removeFromSet(key: string, member: string): Promise<void> {
+        this.sets.get(key)?.delete(member);
+    }
+
+    async getSetMembers(key: string): Promise<string[]> {
+        return Array.from(this.sets.get(key) ?? []);
+    }
+
+    async setExpire(): Promise<void> {
+        return;
+    }
+
+    onModuleDestroy() {
+        this.values.clear();
+        this.sets.clear();
+    }
+}
 
 // Global counter for unique test data
 let testCounter = 0;
@@ -46,11 +129,29 @@ async function cleanDatabase(prisma: PrismaService) {
     await prisma.category.deleteMany().catch(() => {});
     await prisma.address.deleteMany().catch(() => {});
     await prisma.passwordResetToken.deleteMany().catch(() => {});
-    await prisma.customerRefreshToken.deleteMany().catch(() => {});
-    await prisma.customer.deleteMany().catch(() => {});
-    await prisma.refreshToken.deleteMany().catch(() => { });
+    await prisma.refreshToken.deleteMany().catch(() => {});
     await prisma.user.deleteMany().catch(() => {});
+    await prisma.rolePermission.deleteMany().catch(() => {});
+    await prisma.permission.deleteMany().catch(() => {});
     await prisma.role.deleteMany().catch(() => {});
+    await prisma.outboxEvent.deleteMany().catch(() => {});
+    await prisma.webhookProcessingLog.deleteMany().catch(() => {});
+    await prisma.dashboardRevenueSnapshot.deleteMany().catch(() => {});
+    await prisma.ordersByStatus.deleteMany().catch(() => {});
+    await prisma.bestSellingProduct.deleteMany().catch(() => {});
+    await prisma.lowStockProduct.deleteMany().catch(() => {});
+    await prisma.ordersByLocation.deleteMany().catch(() => {});
+    await prisma.orderStatistics.deleteMany().catch(() => {});
+    await prisma.customerCounters.deleteMany().catch(() => {});
+    await prisma.productsByCategory.deleteMany().catch(() => {});
+}
+
+export async function resetE2EDatabase(app: INestApplication) {
+    const prisma = app.get<PrismaService>(PrismaService);
+    const cacheService = app.get<CacheService>(CacheService);
+
+    await cleanDatabase(prisma);
+    cacheService.onModuleDestroy?.();
 }
 
 export async function setupE2ETest() {
@@ -67,28 +168,33 @@ export async function setupE2ETest() {
             // }),
         ],
     })
-    .compile()
+        .overrideProvider(CacheService)
+        .useValue(new InMemoryCacheService())
+        .overrideProvider(STORAGE_SERVICE)
+        .useClass(MockStorageService)
+        .compile();
 
     const app = moduleFixture.createNestApplication<NestExpressApplication>();
-    
+
     const logService = app.get(LogService);
     app.useLogger(logService);
-    
+
     const configService = app.get(ConfigService);
-    
+    assertSafeE2EDatabase(configService.get<string>('DATABASE_URL'));
+
     // Apply the same global configurations as in main.ts
     app.use(cookieParser(configService.get<string>('COOKIE_SECRET')));
-    
-    app.useGlobalFilters(new GlobalExceptionFilter(logService));
-    
-    const reflector = app.get(Reflector);
-    app.useGlobalInterceptors(new ResponseInterceptor(reflector));
-    
-    app.useGlobalPipes(new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        transformOptions: { enableImplicitConversion: true },
-    }));
+
+    const globalExceptionFilter = new GlobalExceptionFilter(logService);
+    app.useGlobalFilters(globalExceptionFilter);
+
+    app.useGlobalPipes(
+        new ValidationPipe({
+            whitelist: true,
+            transform: true,
+            transformOptions: { enableImplicitConversion: true },
+        }),
+    );
 
     app.useStaticAssets(join(__dirname, '..', 'public', 'uploads'), {
         prefix: '/images/',
@@ -96,14 +202,39 @@ export async function setupE2ETest() {
     app.setGlobalPrefix('/api');
     await app.init();
 
+    // Stop background cron jobs to prevent query engine interference during tests
+    try {
+        const schedulerRegistry = app.get(SchedulerRegistry);
+        const cronJobs = schedulerRegistry.getCronJobs();
+        cronJobs.forEach((job) => job.stop());
+    } catch {}
+
     const prisma = app.get<PrismaService>(PrismaService);
 
-    await cleanDatabase(prisma);
+    await resetE2EDatabase(app);
 
     return { app, prisma };
 }
 
-export async function teardownE2ETest(app: INestApplication, prisma: PrismaService) {
+function assertSafeE2EDatabase(databaseUrl?: string) {
+    if (!databaseUrl) {
+        throw new Error('DATABASE_URL must be configured before E2E tests run');
+    }
+
+    const databaseName = databaseUrl.split('?')[0]?.split('/').pop() ?? '';
+    const allowNonTestDb = process.env.E2E_ALLOW_NON_TEST_DB === 'true';
+
+    if (!allowNonTestDb && !/test/i.test(databaseName)) {
+        throw new Error(
+            `Refusing to clean non-test database "${databaseName}". Use a dedicated test database or set E2E_ALLOW_NON_TEST_DB=true explicitly.`,
+        );
+    }
+}
+
+export async function teardownE2ETest(
+    app: INestApplication,
+    prisma: PrismaService,
+) {
     await cleanDatabase(prisma);
     await app.close();
 }

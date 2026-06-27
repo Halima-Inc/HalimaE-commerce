@@ -1,14 +1,17 @@
 import { INestApplication, LoggerService } from '@nestjs/common';
 import request from 'supertest';
+import * as argon2 from 'argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { CreateUserDto } from '../src/users/dto';
-import { UsersService } from '../src/users/users.service';
-import { setupE2ETest, teardownE2ETest } from './jest-e2e.setup';
-import { LogService } from '../src/logger/log.service';
-import { 
-    expectSuccessResponse, 
-    expectErrorResponse, 
-    extractAuthTokenFromResponse
+import {
+    setupE2ETest,
+    teardownE2ETest,
+    getUniqueTestData,
+} from './jest-e2e.setup';
+import { LogService } from '../src/common/log.service';
+import {
+    expectSuccessResponse,
+    expectErrorResponse,
+    extractAuthTokenFromResponse,
 } from './test-utils';
 
 describe('CategoryController (e2e)', () => {
@@ -27,57 +30,67 @@ describe('CategoryController (e2e)', () => {
         ({ app, prisma } = await setupE2ETest());
         logger = app.get<LoggerService>(LogService);
 
-        // 1. Create Roles
-        const adminRole = await prisma.role.create({ data: { name: 'admin' } });
-        const employeeRole = await prisma.role.create({ data: { name: 'employee' } });
+        // Seed roles
+        const [adminRole, employeeRole] = await Promise.all([
+            prisma.role.create({ data: { name: 'admin' } }),
+            prisma.role.create({ data: { name: 'employee' } }),
+        ]);
+
         adminRoleId = adminRole.id;
         employeeRoleId = employeeRole.id;
 
-        // 2. Create Admin user directly to get the first token
-        const adminDto: CreateUserDto = { name: 'Test Admin', email: 'admin-cat@test.com', password: 'password123', roleId: adminRoleId };
-        // In a real scenario, the first admin is often seeded into the DB.
-        // We simulate this by calling the user service directly.
-        // We can't use the signup endpoint as it requires an admin token.
-        const usersService = app.get(UsersService);
-        const adminUser = await usersService.create(adminDto);
-        
-        // 3. Log in as the seeded admin to get a token
-        const adminLoginRes = await request(app.getHttpServer())
-            .post('/api/admin/auth/login')
-            .send({ email: adminDto.email, password: adminDto.password });
-        adminToken = extractAuthTokenFromResponse(adminLoginRes);
+        // Create admin user
+        const adminData = getUniqueTestData('cat-admin');
+        await prisma.user.create({
+            data: {
+                email: adminData.email,
+                name: adminData.name,
+                passwordHash: await argon2.hash('password123'),
+                roleId: adminRoleId,
+            },
+        });
 
-        // 4. Use the admin token to create an employee user via the signup endpoint
-        const employeeDto: CreateUserDto = { name: 'Test Employee', email: 'employee-cat@test.com', password: 'password123', roleId: employeeRoleId };
-        await request(app.getHttpServer())
-            .post('/api/admin/auth/signup')
-            .send(employeeDto)
-            .set('Authorization', `Bearer ${adminToken}`);
+        // Create employee user
+        const employeeData = getUniqueTestData('cat-employee');
+        await prisma.user.create({
+            data: {
+                email: employeeData.email,
+                name: employeeData.name,
+                passwordHash: await argon2.hash('password123'),
+                roleId: employeeRoleId,
+            },
+        });
 
-        // Retrieve the created employee to get their ID for cleanup
-        const employeeUser = await prisma.user.findUnique({ where: { email: employeeDto.email } });
-        expect(employeeUser).not.toBeNull();
+        // Login admin
+        const adminLogin = await request(app.getHttpServer())
+            .post('/api/auth/login')
+            .send({ email: adminData.email, password: 'password123' })
+            .expect(200);
+        adminToken = extractAuthTokenFromResponse(adminLogin);
 
-        // 5. Log in as the new employee to get their token
-        const employeeLoginRes = await request(app.getHttpServer())
-            .post('/api/admin/auth/login')
-            .send({ email: employeeDto.email, password: employeeDto.password });
-        employeeToken = extractAuthTokenFromResponse(employeeLoginRes);
+        // Login employee
+        const employeeLogin = await request(app.getHttpServer())
+            .post('/api/auth/login')
+            .send({ email: employeeData.email, password: 'password123' })
+            .expect(200);
+        employeeToken = extractAuthTokenFromResponse(employeeLogin);
     }, 30000); // Set timeout to 30 seconds for setup
 
     afterAll(async () => {
-        await teardownE2ETest(app, prisma);
-    });
+        if (app && prisma) {
+            await teardownE2ETest(app, prisma);
+        }
+    }, 60000); // Set timeout to 60 seconds for teardown
 
     describe('/categories (POST)', () => {
         it('should reject creation for unauthenticated user', () => {
-        return request(app.getHttpServer())
-            .post('/api/categories')
-            .send({ name: "Women's Clothing", slug: 'womens-clothing' })
-            .expect(401)
-            .expect(res => {
-                expectErrorResponse(res, 401);
-            });
+            return request(app.getHttpServer())
+                .post('/api/categories')
+                .send({ name: "Women's Clothing", slug: 'womens-clothing' })
+                .expect(401)
+                .expect((res) => {
+                    expectErrorResponse(res, 401);
+                });
         });
 
         it('should create a new top-level category for an admin user', async () => {
@@ -99,18 +112,36 @@ describe('CategoryController (e2e)', () => {
                 where: { slug: 'womens-clothing' },
             });
             expect(parentCategory).not.toBeNull();
-            const dto = { name: 'Dresses', slug: 'dresses', parentId: parentCategory!.id };
-            
+            const dto = {
+                name: 'Dresses',
+                slug: 'dresses',
+                parentId: parentCategory!.id,
+            };
+
             const response = await request(app.getHttpServer())
                 .post('/api/categories')
                 .set('Authorization', `Bearer ${employeeToken}`)
                 .send(dto)
                 .expect(201);
-    
+
             const data = expectSuccessResponse<any>(response, 201);
             expect(data).toMatchObject({ name: 'Dresses', slug: 'dresses' });
             expect(data.id).toBeDefined();
             categoryIds.push(data.id);
+        });
+
+        it('should fail to create a category with a duplicate slug', async () => {
+            const dto = {
+                name: "Women's Clothing Duplicate",
+                slug: 'womens-clothing',
+            };
+            const response = await request(app.getHttpServer())
+                .post('/api/categories')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send(dto)
+                .expect(409); // Conflict status for duplicate entries in Prisma
+
+            expectErrorResponse(response, 409);
         });
     });
 
@@ -120,18 +151,25 @@ describe('CategoryController (e2e)', () => {
                 .get('/api/categories')
                 .expect(200);
 
-            logger.debug?.(`Response body: ${JSON.stringify(response.body, null, 2)}`, '/categories (GET)');
+            logger.debug?.(
+                `Response body: ${JSON.stringify(response.body, null, 2)}`,
+                '/categories (GET)',
+            );
 
             const data = expectSuccessResponse<any>(response, 200);
             expect(Array.isArray(data.categories)).toBe(true);
             expect(data.categories.length).toBeGreaterThanOrEqual(2);
-            expect(data.categories.find((c: any) => c.slug === 'womens-clothing')).toBeDefined();
+            expect(
+                data.categories.find((c: any) => c.slug === 'womens-clothing'),
+            ).toBeDefined();
         });
     });
 
     describe('/categories/:id (GET)', () => {
         it('should get a single category by its ID', async () => {
-            const womensCategory = await prisma.category.findFirst({ where: { slug: 'womens-clothing' } });
+            const womensCategory = await prisma.category.findFirst({
+                where: { slug: 'womens-clothing' },
+            });
             expect(womensCategory).not.toBeNull();
             const response = await request(app.getHttpServer())
                 .get(`/api/categories/${womensCategory!.id}`)
@@ -146,7 +184,7 @@ describe('CategoryController (e2e)', () => {
             return request(app.getHttpServer())
                 .get('/api/categories/00000000-0000-0000-0000-000000000000')
                 .expect(404)
-                .expect(res => {
+                .expect((res) => {
                     expectErrorResponse(res, 404);
                 });
         });
@@ -166,7 +204,9 @@ describe('CategoryController (e2e)', () => {
 
     describe('/categories/:id (PATCH)', () => {
         it('should update a category for an employee user', async () => {
-            const dressesCategory = await prisma.category.findFirst({ where: { slug: 'dresses' } });
+            const dressesCategory = await prisma.category.findFirst({
+                where: { slug: 'dresses' },
+            });
             expect(dressesCategory).not.toBeNull();
             const dto = { name: 'Summer Dresses' };
             const response = await request(app.getHttpServer())
@@ -179,35 +219,52 @@ describe('CategoryController (e2e)', () => {
             expect(data.name).toBe('Summer Dresses');
             expect(data.slug).toBe('dresses'); // slug was not updated
         });
+
+        it('should return 404 when trying to update a non-existent category', () => {
+            return request(app.getHttpServer())
+                .patch('/api/categories/00000000-0000-0000-0000-000000000000')
+                .set('Authorization', `Bearer ${adminToken}`)
+                .send({ name: 'New Name' })
+                .expect(404)
+                .expect((res) => {
+                    expectErrorResponse(res, 404);
+                });
+        });
     });
 
     describe('/categories/:id (DELETE)', () => {
         it('should reject deletion for an employee user', async () => {
-            const womensCategory = await prisma.category.findFirst({ where: { slug: 'womens-clothing' } });
+            const womensCategory = await prisma.category.findFirst({
+                where: { slug: 'womens-clothing' },
+            });
             expect(womensCategory).not.toBeNull();
             return request(app.getHttpServer())
                 .delete(`/api/categories/admin/${womensCategory!.id}`)
                 .set('Authorization', `Bearer ${employeeToken}`)
                 .expect(403) // Forbidden, as only admin can delete
-                .expect(res => {
+                .expect((res) => {
                     expectErrorResponse(res, 403);
                 });
         });
-        
+
         it('shouldn not delete a parent category that has children', async () => {
-            const womensCategory = await prisma.category.findFirst({ where: { slug: 'womens-clothing' } });
+            const womensCategory = await prisma.category.findFirst({
+                where: { slug: 'womens-clothing' },
+            });
             expect(womensCategory).not.toBeNull();
             await request(app.getHttpServer())
                 .delete(`/api/categories/admin/${womensCategory!.id}`)
                 .set('Authorization', `Bearer ${adminToken}`)
-                .expect(400)
-                .expect(res => {
-                    expectErrorResponse(res, 400);
+                .expect(409)
+                .expect((res) => {
+                    expectErrorResponse(res, 409);
                 });
         });
-        
-        it('should delete a category for an admin user', async () =>{
-            const womensCategory = await prisma.category.findFirst({ where: { slug: 'dresses' } });
+
+        it('should delete a category for an admin user', async () => {
+            const womensCategory = await prisma.category.findFirst({
+                where: { slug: 'dresses' },
+            });
             expect(womensCategory).not.toBeNull();
             await request(app.getHttpServer())
                 .delete(`/api/categories/admin/${womensCategory!.id}`)
@@ -222,10 +279,12 @@ describe('CategoryController (e2e)', () => {
 
         it('should return 404 when trying to delete a non-existent category', () => {
             return request(app.getHttpServer())
-                .delete('/api/categories/00000000-0000-0000-0000-000000000000')
+                .delete(
+                    '/api/categories/admin/00000000-0000-0000-0000-000000000000',
+                )
                 .set('Authorization', `Bearer ${adminToken}`)
                 .expect(404)
-                .expect(res => {
+                .expect((res) => {
                     expectErrorResponse(res, 404);
                 });
         });

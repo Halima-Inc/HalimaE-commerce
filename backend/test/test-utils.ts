@@ -1,4 +1,4 @@
-import { ApiResponse, ErrorResponseDto } from '../common/dto/response.dto';
+import { ApiResponse, ErrorResponseDto } from '../src/common/dto/response.dto';
 
 /**
  * Utility functions for testing standardized API responses
@@ -7,7 +7,10 @@ import { ApiResponse, ErrorResponseDto } from '../common/dto/response.dto';
 /**
  * Validates that a response follows the standardized success format
  */
-export function expectSuccessResponse<T>(response: any, expectedStatusCode: number = 200): T {
+export function expectSuccessResponse<T>(
+    response: any,
+    expectedStatusCode: number = 200,
+): T {
     // Validate the response structure
     expect(response.body).toHaveProperty('success', true);
     expect(response.body).toHaveProperty('data');
@@ -26,7 +29,10 @@ export function expectSuccessResponse<T>(response: any, expectedStatusCode: numb
 /**
  * Validates that a response follows the standardized error format
  */
-export function expectErrorResponse(response: any, expectedStatusCode: number): ErrorResponseDto {
+export function expectErrorResponse(
+    response: any,
+    expectedStatusCode: number,
+): ErrorResponseDto {
     // Validate the response structure
     expect(response.body).toHaveProperty('success', false);
     expect(response.body).toHaveProperty('data', null);
@@ -52,7 +58,10 @@ export function expectErrorResponse(response: any, expectedStatusCode: number): 
 /**
  * Creates a matcher for success responses with specific data expectations
  */
-export function expectSuccessResponseWithData<T>(expectedData: Partial<T>, statusCode: number = 200) {
+export function expectSuccessResponseWithData<T>(
+    expectedData: Partial<T>,
+    statusCode: number = 200,
+) {
     return (response: any) => {
         const data = expectSuccessResponse<T>(response, statusCode);
         expect(data).toMatchObject(expectedData);
@@ -63,7 +72,10 @@ export function expectSuccessResponseWithData<T>(expectedData: Partial<T>, statu
 /**
  * Creates a matcher for error responses with specific message expectations
  */
-export function expectErrorResponseWithMessage(expectedMessage: string | RegExp, statusCode: number) {
+export function expectErrorResponseWithMessage(
+    expectedMessage: string | RegExp,
+    statusCode: number,
+) {
     return (response: any) => {
         const error = expectErrorResponse(response, statusCode);
         if (typeof expectedMessage === 'string') {
@@ -78,7 +90,10 @@ export function expectErrorResponseWithMessage(expectedMessage: string | RegExp,
 /**
  * Validates that a response is a successful array response
  */
-export function expectSuccessArrayResponse<T>(response: any, expectedStatusCode: number = 200): T[] {
+export function expectSuccessArrayResponse<T>(
+    response: any,
+    expectedStatusCode: number = 200,
+): T[] {
     const data = expectSuccessResponse<T[]>(response, expectedStatusCode);
     expect(Array.isArray(data)).toBe(true);
     return data;
@@ -87,16 +102,19 @@ export function expectSuccessArrayResponse<T>(response: any, expectedStatusCode:
 /**
  * Validates that a response is a successful paginated response
  */
-export function expectSuccessPaginatedResponse<T>(response: any, expectedStatusCode: number = 200): { items: T[], meta: any } {
+export function expectSuccessPaginatedResponse<T>(
+    response: any,
+    expectedStatusCode: number = 200,
+): { items: T[]; meta: any } {
     const data = expectSuccessResponse<any>(response, expectedStatusCode);
-    
+
     // For paginated responses, the data structure varies
     // Some might have { products: [], meta: {} }, others might have { items: [], meta: {} }
     // We'll be flexible here
     expect(data).toHaveProperty('meta');
     expect(data.meta).toHaveProperty('totalPages');
     expect(data.meta).toHaveProperty('currentPage');
-    
+
     return data;
 }
 
@@ -106,8 +124,9 @@ export function expectSuccessPaginatedResponse<T>(response: any, expectedStatusC
 export function extractAuthTokenFromResponse(response: any): string {
     // For login responses, we might get 200 or 201 status
     const data = expectSuccessResponse<any>(response, response.status);
-    expect(data).toHaveProperty('access_token');
-    return data.access_token;
+    const token = data.accessToken ?? data.access_token;
+    expect(token).toBeDefined();
+    return token;
 }
 
 /**
@@ -120,14 +139,17 @@ export function expectHttpStatus(response: any, expectedStatusCode: number) {
 /**
  * Validates that the response has the correct message for different HTTP methods
  */
-export function expectSuccessMessage(response: any, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE') {
+export function expectSuccessMessage(
+    response: any,
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+) {
     const expectedMessages = {
         GET: 'Request completed successfully',
         POST: 'Resource created successfully',
         PUT: 'Resource updated successfully',
         PATCH: 'Resource updated successfully',
-        DELETE: 'Resource deleted successfully'
+        DELETE: 'Resource deleted successfully',
     };
-    
+
     expect(response.body.message).toBe(expectedMessages[method]);
 }

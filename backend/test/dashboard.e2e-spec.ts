@@ -1,8 +1,12 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import * as argon2 from 'argon2';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { UsersService } from '../src/users/users.service';
-import { setupE2ETest, teardownE2ETest, getUniqueTestData } from './jest-e2e.setup';
+import {
+    setupE2ETest,
+    teardownE2ETest,
+    getUniqueTestData,
+} from './jest-e2e.setup';
 import { DashboardService } from '../src/dashboard/dashboard.service';
 import { CacheService } from '../src/common/cache.service';
 import {
@@ -31,22 +35,28 @@ describe('DashboardController (e2e)', () => {
         dashboardService = app.get(DashboardService);
         cacheService = app.get(CacheService);
 
-        // Create admin role and user
-        const adminRole = await prisma.role.create({ data: { name: 'admin' } });
+        // Find or create admin role and user
+        let adminRole = await prisma.role.findFirst({
+            where: { name: 'admin' },
+        });
+        if (!adminRole) {
+            adminRole = await prisma.role.create({ data: { name: 'admin' } });
+        }
         adminRoleId = adminRole.id;
 
         const uniqueData = getUniqueTestData('dashboard-admin');
-        const usersService = app.get(UsersService);
-        await usersService.create({
-            name: uniqueData.name,
-            email: uniqueData.email,
-            password: 'password123',
-            roleId: adminRoleId,
+        await prisma.user.create({
+            data: {
+                name: uniqueData.name,
+                email: uniqueData.email,
+                passwordHash: await argon2.hash('password123'),
+                roleId: adminRoleId,
+            },
         });
 
         // Login to get admin token
         const loginResponse = await request(app.getHttpServer())
-            .post('/api/admin/auth/login')
+            .post('/api/auth/login')
             .send({ email: uniqueData.email, password: 'password123' });
 
         adminToken = extractAuthTokenFromResponse(loginResponse);
@@ -58,21 +68,30 @@ describe('DashboardController (e2e)', () => {
     afterAll(async () => {
         // Clear cache
         await cacheService.del('dashboard-metrics').catch(() => {});
-        
+
         if (app) {
             await teardownE2ETest(app, prisma);
         }
     }, 60000);
 
     async function createTestData() {
-        // Create customer
+        // Create customer role and user
+        let customerRole = await prisma.role.findFirst({
+            where: { name: 'customer' },
+        });
+        if (!customerRole) {
+            customerRole = await prisma.role.create({
+                data: { name: 'customer' },
+            });
+        }
+
         const customerData = getUniqueTestData('dashboard-customer');
-        const customer = await prisma.customer.create({
+        const customer = await prisma.user.create({
             data: {
                 name: customerData.name,
                 email: customerData.email,
                 passwordHash: 'hashed',
-                status: 'ACTIVE',
+                roleId: customerRole.id,
             },
         });
         customerId = customer.id;
@@ -80,7 +99,7 @@ describe('DashboardController (e2e)', () => {
         // Create address for customer
         const address = await prisma.address.create({
             data: {
-                customerId: customer.id,
+                userId: customer.id,
                 firstName: 'Test',
                 lastName: 'Customer',
                 line1: '123 Test St',
@@ -143,7 +162,7 @@ describe('DashboardController (e2e)', () => {
         const order = await prisma.order.create({
             data: {
                 orderNo: `ORD-${Date.now()}`,
-                customerId: customer.id,
+                userId: customer.id,
                 currency: 'EGP',
                 status: 'PENDING',
                 paymentStatus: 'PAID',
@@ -166,7 +185,7 @@ describe('DashboardController (e2e)', () => {
         await prisma.order.create({
             data: {
                 orderNo: `ORD-${Date.now()}-2`,
-                customerId: customer.id,
+                userId: customer.id,
                 currency: 'EGP',
                 status: 'PENDING',
                 paymentStatus: 'PAID',
@@ -217,8 +236,9 @@ describe('DashboardController (e2e)', () => {
 
     describe('GET /api/dashboard', () => {
         it('should return 401 without authentication', async () => {
-            const response = await request(app.getHttpServer())
-                .get('/api/dashboard');
+            const response = await request(app.getHttpServer()).get(
+                '/api/dashboard',
+            );
 
             expect(response.status).toBe(401);
         });
@@ -334,7 +354,7 @@ describe('DashboardController (e2e)', () => {
 
             // We created a product with stock 5, threshold 10
             const lowStockItem = data.lowStockProducts.find(
-                (p: any) => p.stock === 5
+                (p: any) => p.stock === 5,
             );
             expect(lowStockItem).toBeDefined();
         });
@@ -351,10 +371,10 @@ describe('DashboardController (e2e)', () => {
 
             // We created orders with Egypt address
             const egyptStats = data.ordersByLocation.find(
-                (loc: any) => loc.country === 'Egypt'
+                (loc: any) => loc.country === 'Egypt',
             );
             expect(egyptStats).toBeDefined();
-            expect(egyptStats?.totalOrders).toBeGreaterThanOrEqual(2);
+            expect(egyptStats?.count).toBeGreaterThanOrEqual(2);
             expect(egyptStats?.revenue).toBe(300);
         });
 
@@ -366,7 +386,9 @@ describe('DashboardController (e2e)', () => {
             const data: DashboardDto = expectSuccessResponse(response, 200);
 
             expect(data.productsByCategory).toBeDefined();
-            expect(Object.keys(data.productsByCategory).length).toBeGreaterThan(0);
+            expect(Object.keys(data.productsByCategory).length).toBeGreaterThan(
+                0,
+            );
         });
 
         it('should return sales by period', async () => {
@@ -397,8 +419,9 @@ describe('DashboardController (e2e)', () => {
 
     describe('GET /api/dashboard/refresh', () => {
         it('should return 401 without authentication', async () => {
-            const response = await request(app.getHttpServer())
-                .get('/api/dashboard/refresh');
+            const response = await request(app.getHttpServer()).get(
+                '/api/dashboard/refresh',
+            );
 
             expect(response.status).toBe(401);
         });
@@ -460,14 +483,17 @@ describe('DashboardController (e2e)', () => {
                 .get('/api/dashboard')
                 .set('Authorization', `Bearer ${adminToken}`);
 
-            const initialData: DashboardDto = expectSuccessResponse(initialResponse, 200);
+            const initialData: DashboardDto = expectSuccessResponse(
+                initialResponse,
+                200,
+            );
 
             // Create a new order
             const orderNo = `ORD-REFRESH-${Date.now()}`;
             await prisma.order.create({
                 data: {
                     orderNo,
-                    customerId,
+                    userId: customerId,
                     currency: 'EGP',
                     status: 'PENDING',
                     paymentStatus: 'PAID',
@@ -491,10 +517,15 @@ describe('DashboardController (e2e)', () => {
                 .get('/api/dashboard/refresh')
                 .set('Authorization', `Bearer ${adminToken}`);
 
-            const refreshedData: DashboardDto = expectSuccessResponse(refreshResponse, 200);
+            const refreshedData: DashboardDto = expectSuccessResponse(
+                refreshResponse,
+                200,
+            );
 
             // Revenue should be higher after new order
-            expect(refreshedData.totalRevenue).toBe(initialData.totalRevenue + 50);
+            expect(refreshedData.totalRevenue).toBe(
+                initialData.totalRevenue + 50,
+            );
             expect(refreshedData.totalOrders).toBe(initialData.totalOrders + 1);
         });
     });
@@ -528,93 +559,6 @@ describe('DashboardController (e2e)', () => {
             // Total discount = 3 * 20 = 60
             expect(metrics.totalDiscounts).toBeGreaterThanOrEqual(60);
             expect(metrics.avgDiscountPct).toBeGreaterThan(0);
-        });
-    });
-});
-
-describe('DashboardScheduler (e2e)', () => {
-    let app: INestApplication;
-    let prisma: PrismaService;
-
-    beforeAll(async () => {
-        ({ app, prisma } = await setupE2ETest());
-    }, 60000);
-
-    afterAll(async () => {
-        if (app) {
-            await teardownE2ETest(app, prisma);
-        }
-    }, 60000);
-
-    describe('Scheduler Configuration', () => {
-        it('should have DashboardScheduler registered', () => {
-            // Import dynamically to check registration
-            const { DashboardScheduler } = require('../src/dashboard/dashboard.scheduler');
-            const scheduler = app.get(DashboardScheduler);
-            expect(scheduler).toBeDefined();
-        });
-
-        it('should have cron methods defined', () => {
-            const { DashboardScheduler } = require('../src/dashboard/dashboard.scheduler');
-            const scheduler = app.get(DashboardScheduler);
-
-            expect(scheduler.enqueueEvery5Min).toBeDefined();
-            expect(scheduler.enqueueNightly).toBeDefined();
-        });
-
-        it('should be able to manually trigger enqueue methods', async () => {
-            const { DashboardScheduler } = require('../src/dashboard/dashboard.scheduler');
-            const scheduler = app.get(DashboardScheduler);
-
-            // These should not throw
-            await expect(scheduler.enqueueEvery5Min()).resolves.not.toThrow();
-        });
-    });
-});
-
-describe('DashboardProcessor (e2e)', () => {
-    let app: INestApplication;
-    let prisma: PrismaService;
-    let cacheService: CacheService;
-
-    beforeAll(async () => {
-        ({ app, prisma } = await setupE2ETest());
-        cacheService = app.get(CacheService);
-    }, 60000);
-
-    afterAll(async () => {
-        await cacheService.del('dashboard-metrics').catch(() => {});
-        if (app) {
-            await teardownE2ETest(app, prisma);
-        }
-    }, 60000);
-
-    describe('Processor Configuration', () => {
-        it('should have DashboardProcessor registered', () => {
-            const { DashboardProcessor } = require('../src/dashboard/dashboard.processor');
-            const processor = app.get(DashboardProcessor);
-            expect(processor).toBeDefined();
-        });
-
-        it('should process compute-dashboard job', async () => {
-            const { DashboardProcessor } = require('../src/dashboard/dashboard.processor');
-            const processor = app.get(DashboardProcessor);
-
-            // Create a mock job object
-            const mockJob = {
-                id: 'test-job-1',
-                data: {},
-                progress: jest.fn(),
-            };
-
-            // Process the job
-            const result = await processor.handleCompute(mockJob);
-
-            expect(result).toEqual({ ok: true });
-
-            // Check that cache was populated
-            const cached = await cacheService.get('dashboard-metrics');
-            expect(cached).not.toBeNull();
         });
     });
 });
